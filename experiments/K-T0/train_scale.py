@@ -102,7 +102,8 @@ def main():
     ap.add_argument("--train-roots", nargs="+", required=True)
     ap.add_argument("--test-root", required=True)
     ap.add_argument("--steps", type=int, default=10000)
-    ap.add_argument("--bs", type=int, default=8)
+    ap.add_argument("--bs", type=int, default=8, help="micro-batch size")
+    ap.add_argument("--accum", type=int, default=1, help="gradient accumulation (effective batch = bs*accum)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--spk-weight", type=float, default=0.1)
     ap.add_argument("--eval-every", type=int, default=1000)
@@ -110,6 +111,7 @@ def main():
     ap.add_argument("--n-test", type=int, default=300)
     ap.add_argument("--out", default="/workspace/ckpt_scale")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--allow-overlap", action="store_true", help="smoke test only: skip the speaker-disjoint check")
     a = ap.parse_args()
 
     dev = "cuda"
@@ -118,13 +120,13 @@ def main():
     t0 = time.time()
     train_idx = build_index(a.train_roots, f"{a.out}/train_index.json")
     test_idx = build_index([a.test_root], f"{a.out}/test_index.json")
-    assert not set(train_idx) & set(test_idx), "train/test speakers overlap"
+    assert a.allow_overlap or not set(train_idx) & set(test_idx), "train/test speakers overlap"
     print(f"train: {len(train_idx)} speakers, {sum(len(v) for v in train_idx.values())} utts | "
           f"test: {len(test_idx)} speakers, {sum(len(v) for v in test_idx.values())} utts "
           f"(index {time.time()-t0:.0f}s)", flush=True)
 
     train_dl = torch.utils.data.DataLoader(
-        MixDataset(train_idx, a.steps * a.bs, seed=a.seed), batch_size=a.bs, num_workers=a.workers,
+        MixDataset(train_idx, a.steps * a.accum * a.bs, seed=a.seed), batch_size=a.bs, num_workers=a.workers,
         shuffle=False, drop_last=True, prefetch_factor=4,
     )
     test_dl = torch.utils.data.DataLoader(
@@ -138,16 +140,19 @@ def main():
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
 
     log, t0 = [], time.time()
-    for step, (mix, t, _, et, _) in enumerate(train_dl, 1):
+    for micro, (mix, t, _, et, _) in enumerate(train_dl, 1):
         mix, t, et = mix.to(dev), t.to(dev), et.to(dev)
         with torch.no_grad():
             d = se(et)
         est = model(mix, d)
         loss, parts = kezek_loss(est, t, d, se, a.spk_weight)
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
+        (loss / a.accum).backward()
+        if micro % a.accum:
+            continue
+        step = micro // a.accum
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
         opt.step()
+        opt.zero_grad(set_to_none=True)
         sched.step()
         if step % 100 == 0:
             print(f"step {step:6d}  loss {float(loss):7.3f}  {parts}  {time.time()-t0:6.0f}s", flush=True)
