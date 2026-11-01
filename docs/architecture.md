@@ -3,7 +3,22 @@
 Status: design draft (2026-11-01). The choice between the audio and the Mimi variant is made
 by experiment K-T0.
 
-## Task
+## Goal and steps
+
+Goal: from a mono recording of two people, each speaker on their own track (two mono or one
+stereo file), overlaps included.
+
+```
+step 1:  mono (A + B) + voice sample of A  ─►  extractor  ─►  mono, A only
+step 2:  mono (A + B) ─► extractor(sample A) ─► channel A
+                      └► extractor(sample B) ─► channel B   ─►  two mono / stereo
+```
+
+Step 2 needs voice samples of both speakers. On real mono recordings they are found
+automatically from stretches where each person talks alone. A later option is one model that
+outputs both channels from two samples.
+
+## Step 1 task
 
 ```
 mixture  x = s_A + s_B        mono, exactly two speakers
@@ -69,6 +84,14 @@ Overlaid single-speaker clips (the answer is known exactly), built by `kezek.mix
 
 Only real conversations recorded with one speaker per channel, summed to mono. Never test on
 overlaid clips: those numbers look good and say little.
+
+## Step 2: two tracks
+
+- The same extractor, two passes: with the sample of A and with the sample of B.
+- Finding the samples on mono recordings without channels: voice activity, speaker change
+  and clustering (or diarization).
+- Scored on real stereo: both channels against the reference, leakage between channels,
+  overlaps and backchannels preserved.
 
 ## Out of scope for now
 

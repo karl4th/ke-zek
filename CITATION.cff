@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use Kezek or KezekBench, please cite it as below."
-title: "Kezek: target speaker extraction from two-speaker mono recordings"
+title: "Kezek: separating the two speakers of a mono conversation via target speaker extraction"
 type: software
 authors:
   - family-names: Karl

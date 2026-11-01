@@ -1,7 +1,8 @@
-"""Kezek: extract one speaker's voice from a two-speaker mono recording.
+"""Kezek: each speaker of a two-person mono recording on their own track.
 
-Given a mono mixture of two people talking and a short sample of the target speaker's voice
-(enrollment), Kezek returns mono audio that contains only the target speaker.
+Step 1 (this package now): given a mono mixture of two people talking and a short sample of
+the target speaker's voice (enrollment), return mono audio that contains only that speaker.
+Step 2 runs it once per speaker to build two tracks (two mono or stereo).
 """
 
 from kezek.enrollment import pick_enrollment

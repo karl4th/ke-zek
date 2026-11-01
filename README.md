@@ -1,20 +1,28 @@
 # Kezek
 
-**Target speaker extraction: given a mono recording of two people talking and a short sample of one speaker's voice, return mono audio with only that speaker.**
+**Get each speaker of a conversation on their own track from a single mono recording.**
 
 *Kezek* (Kazakh *кезек*: turn, one's turn to speak).
 
+The goal: a mono recording of two people talking in, two mono tracks (or one stereo file,
+one speaker per channel) out, overlaps included. We get there in steps:
+
+1. **Mono → mono of one speaker (now).** Given the mixture and a short sample of the target
+   speaker's voice, return audio with only that speaker (target speaker extraction).
+2. **Mono → two mono / stereo.** Run step 1 once per speaker and put the results on separate
+   channels.
+
 ```
-mono recording (speakers A + B)  ─┐
-                                   ├─►  Kezek  ─►  mono recording of A only
-voice sample of A (5-30 s)       ─┘
+step 1:  mono (A + B) + voice sample of A  ─►  Kezek  ─►  mono, A only
+step 2:  mono (A + B) ─► Kezek(sample A) ─► channel A
+                      └► Kezek(sample B) ─► channel B   ─►  two mono / stereo
 ```
 
 > **Status: pre-release, research in progress.** No model weights or results yet. The
 > repository holds the design, the scoring code and the experiment protocols. Numbers will
 > appear here only after they are measured.
 
-## Scope
+## Scope of step 1
 
 - **Input:** a mono mixture with exactly two speakers, and an enrollment clip (voice sample)
   of the target speaker. The enrollment is required.
@@ -91,12 +99,13 @@ kezek score items/* --json report.json
 
 ## Roadmap
 
-| Stage | Goal | Status |
-|---|---|---|
-| K-T0 | Audio vs Mimi extraction; quick test on real two-channel English conversations | protocol drafted |
-| K-T1 | Scale training data (conversation-style mixtures from podcasts); test on CANDOR | planned |
-| K-T2 | Kazakh / Kazakh-Russian: training mixtures and a recorded two-channel test set | planned |
-| K-T3 | Benchmark release and paper on arXiv | planned |
+| Step | Stage | Goal | Status |
+|---|---|---|---|
+| 1 | K-T0 | Audio vs Mimi extraction; quick test on real two-channel English conversations | protocol drafted |
+| 1 | K-T1 | Scale training data (conversation-style mixtures from podcasts); test on CANDOR | planned |
+| 2 | K-S | Both speakers → two mono / stereo; find voice samples automatically on mono recordings | planned |
+| 3 | K-T2 | Kazakh / Kazakh-Russian: training mixtures and a recorded two-channel test set | planned |
+| 3 | K-T3 | Benchmark release and paper on arXiv | planned |
 
 See [docs/roadmap.md](docs/roadmap.md).
 

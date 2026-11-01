@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "kezek"
 version = "0.0.1"
-description = "Target speaker extraction: one speaker's voice from a two-speaker mono recording, given a voice sample"
+description = "Each speaker of a two-person mono recording on their own track, via target speaker extraction"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
