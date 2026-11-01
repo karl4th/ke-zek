@@ -1,0 +1,2 @@
+# Show ids excluded from all training data because an episode of the show is in KezekBench.
+# One id per line. Filled in during K0.

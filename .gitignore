@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Audio, features, checkpoints: never committed (see docs/data.md)
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.opus
+*.npy
+*.npz
+*.pt
+*.ckpt
+*.safetensors
+cache/
+features/
+checkpoints/
+runs/
+wandb/
+
+# Local data; manifests in data/manifests are committed
+data/*
+!data/README.md
+!data/manifests/
+data/manifests/*.local.*
+
+# Secrets and editors
+.env
+.idea/
+.vscode/
+.DS_Store

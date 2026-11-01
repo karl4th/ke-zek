@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use Kezek or KezekBench, please cite it as below."
+title: "Kezek: fast speaker diarization for podcasts on Mimi latents, and the KezekBench duplex benchmark"
+type: software
+authors:
+  - family-names: Karl
+    given-names: Bagzhan
+repository-code: "https://github.com/karl4th/ke-zek"
+license: MIT
+version: 0.0.1
+date-released: 2026-11-01
+keywords:
+  - speaker diarization
+  - voice activity detection
+  - benchmark
+  - full-duplex speech
+  - Kazakh

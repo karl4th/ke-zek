@@ -1,0 +1,45 @@
+# K-E0: Mimi latents vs WavLM-Base+ as the encoder under the segmentation head.
+# Draft. Frozen before launch: the commit hash of this file goes into the experiment record.
+# Protocol: experiments/K-E0/README.md
+
+experiment: K-E0
+seeds: [0, 1]
+hardware: RTX 3060 12 GB, features of both encoders cached on disk
+
+arms:
+  mimi:
+    encoder: mimi
+    features: pre-quantization latents, 512-d, 12.5 Hz
+    frozen: true
+  wavlm:
+    encoder: microsoft/wavlm-base-plus
+    layer: null            # TODO: choose on dev set before launch, then fix
+    features: 768-d, 50 Hz, mean-pooled 4:1 to 12.5 Hz
+    frozen: true
+
+head:                      # identical for both arms, parameter count within +-5%
+  type: null               # TODO: conformer | mamba2, decide before launch
+  params_million: [5, 10]
+  window_s: 10.0
+  window_step_s: 2.5
+  powerset:
+    max_speakers: 3
+    max_overlap: 2
+
+train:
+  data:
+    - pseudo_labels: podcasts, 500-1000 h, frames where pyannote 3.1 and DiariZen agree
+    - human: AMI (train), VoxConverse (dev split not used here)
+    - synthetic_overlap: 10% of batches, turn overlaps 0.2-2.0 s
+  loss: powerset cross-entropy, disagreement frames masked, overlap classes up-weighted
+  steps: null              # TODO: fix before launch; same for both arms
+  batch_order: identical across arms (same data seed)
+
+eval:
+  primary: DER on KezekBench v0, local segmentation, oracle speaker mapping per window
+  guardrails:
+    - leakage
+    - boundary error p90
+    - overlap recall
+    - linear speaker probe on frozen features of both encoders
+  also_report: VoxConverse dev DER (comparability only)
