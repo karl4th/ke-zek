@@ -5,44 +5,47 @@
 experiment: K-T0
 seeds: [0, 1]              # trained arms only
 hardware: RTX 3060 12 GB
+sample_rate_hz: 24000      # Mimi
 
-data:
-  quick_test:
-    - expresso: improvised dialogues, stereo 48 kHz, one actor per channel
-    - duplexchat_e0b: 101 clips from Dauys (channels are DialogueSidon output, caveat)
-  main_test: candor held-out sessions, same splits as Dauys, sealed test never used
-  train_mixes:
-    - candor train split, channels summed to mono
-    - podcast same-episode overlays, overlap 0.2-2.0 s
-  enrollment_s: [10, 30]   # target solo speech from another part of the session
-  sample_rate_hz: 24000    # Mimi
+test:
+  source: expresso improvised dialogues, held-out sessions
+  targets: both channels of each conversation
+  enrollment_s: 10
+  segment: everything except the stretches used for enrollment
+
+train_mixtures:
+  sources:
+    - english podcasts, solo stretches, both speakers from the same episode
+  placement:
+    conversation_like: 0.8   # kezek.mixing.conversation_schedule
+    overlap_prob: 0.2
+    overlap_s: [0.2, 2.0]
+    gap_s: [0.1, 1.0]
+    full_overlap: 0.2        # kezek.mixing.mix_pair, SIR uniform in [-5, 5] dB
+  hours: null                # TODO: fix before launch
 
 arms:
-  cut: {}
+  mixture: {}
   audio-zs:
-    model: null            # TODO: WeSep or SpeakerBeam checkpoint, fix before launch
+    model: null              # TODO: WeSep or SpeakerBeam-family checkpoint
   audio-ft:
     init: audio-zs
-    steps: null            # TODO
+    steps: null              # TODO
   mimi:
     input: Mimi latents pre-quantization, 512-d, 12.5 Hz
     output: Mimi tokens, 8 codebooks
-    enrollment: null       # TODO: ECAPA embedding or Mimi latents of the enrollment
-    params_million: null   # TODO
-    steps: null            # TODO
+    enrollment_encoder: null # TODO: frozen ECAPA, or Mimi latents of the enrollment
+    params_million: null     # TODO
+    steps: null              # TODO, same as audio-ft
   ceiling:
     mimi_round_trip: true
 
 eval:
   mimi_round_trip_all_arms: true
-  regions_from: VAD on reference channels
-  primary: SI-SDR (dB) on overlap regions
-  guardrails:
+  primary: sisdr_overlap
+  pass:
+    sisdr_overlap_min_db: 10.0
     leakage_max: 0.02
-    solo_sisdr_vs_ceiling_db: -1.0
-    backchannel_retention_min: 0.80
-    speaker_similarity: report
-    speed: report
-  thresholds:
-    overlap_sisdr_min_db: 10.0
-    mimi_vs_audio_max_gap_db: 2.0
+    sisdr_solo_vs_ceiling_db: -1.0
+  mimi_vs_audio_max_gap_db: 2.0
+  report: [sisdri_overlap, residual_db, speaker_similarity, speed]

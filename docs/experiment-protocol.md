@@ -30,7 +30,7 @@ on its own beats the baseline. Anything else is a grey zone, and rule 1 applies.
 - Never compare training losses between arms with different inputs or targets.
 - The evaluation protocol, test sets and scripts are committed **before** training starts.
   That commit hash is recorded in the experiment.
-- Test episodes and their speakers never appear in training, in any arm.
+- Test recordings and their speakers never appear in training, in any arm.
 - KezekBench is a test set only. Hyper-parameters are tuned on a separate dev set.
 
 ## 5. Report

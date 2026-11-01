@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "kezek"
 version = "0.0.1"
-description = "Fast speaker diarization for podcasts on Mimi latents, with the KezekBench duplex benchmark"
+description = "Target speaker extraction: one speaker's voice from a two-speaker mono recording, given a voice sample"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Bagzhan Karl" }]
 requires-python = ">=3.10"
-keywords = ["speaker diarization", "voice activity detection", "speech", "benchmark", "full-duplex"]
+keywords = ["target speaker extraction", "speech separation", "speech", "Mimi", "Kazakh"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
@@ -21,15 +21,10 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24",
-    "scipy>=1.10",
+    "soundfile>=0.12",
 ]
 
 [project.optional-dependencies]
-# Reference systems for K0. Installed separately: they pull in torch and model weights.
-baselines = [
-    "pyannote.audio>=3.1",
-    "soundfile>=0.12",
-]
 dev = [
     "pytest>=8",
     "ruff>=0.6",

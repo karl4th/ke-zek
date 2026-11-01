@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use Kezek or KezekBench, please cite it as below."
-title: "Kezek: fast speaker diarization for podcasts on Mimi latents, and the KezekBench duplex benchmark"
+title: "Kezek: target speaker extraction from two-speaker mono recordings"
 type: software
 authors:
   - family-names: Karl
@@ -10,8 +10,7 @@ license: MIT
 version: 0.0.1
 date-released: 2026-11-01
 keywords:
-  - speaker diarization
-  - voice activity detection
+  - target speaker extraction
+  - speech separation
   - benchmark
-  - full-duplex speech
   - Kazakh

@@ -1,93 +1,84 @@
 # K-T0: target speaker extraction, audio vs Mimi latents
 
-Status: protocol draft (2026-11-01). Runs in parallel with K0. Diarization is not needed:
-enrollment is taken from the reference channels (oracle).
+Status: protocol draft (2026-11-01). First experiment of Kezek.
 Config: [configs/k-t0.yaml](../../configs/k-t0.yaml).
 
-## Idea
+## Task
 
-If one speaker's voice can be extracted cleanly from a two-person mono mix, building a stereo
-conversation is trivial: extract A, extract B, put them in two channels. Unlike
-cut-and-silence pseudo-duplex, this keeps overlaps and backchannels ("mm-hm" over the
-partner's speech).
+Input: a mono recording of two people and 10 s of the target speaker's voice. Output: mono
+audio with only the target speaker.
 
 ## Questions
 
-1. Can target speaker extraction (TSE) recover one speaker from a real two-person mix cleanly
-   enough to build stereo training data, overlaps included?
-2. Can extraction on continuous Mimi latents, with Mimi tokens as output, get close to
-   audio-domain extraction at a fraction of the cost?
+1. How cleanly can one speaker be extracted from a **real** two-person conversation with an
+   open extraction model, out of the box and after fine-tuning on our mixtures?
+2. Does extraction on continuous Mimi latents (Mimi tokens out) come close to audio-domain
+   extraction?
 
 ## Ground truth
 
-Real two-channel conversations (one speaker per channel) are summed to mono. The input is the
-mix and the target is one original channel. Enrollment is 10-30 s of the target speaker's solo
-speech, taken from another part of the same session.
+Real conversations recorded with one speaker per channel, summed to mono; one channel is the
+target. Each conversation gives two items (each speaker as the target). The enrollment is 10 s
+of the target's solo speech from outside the scored segment (`kezek prepare`).
 
 ## Arms
 
 | Arm | Input | Output | Training |
 |---|---|---|---|
-| `cut` | mix + reference activity of the target | mix where only the target talks, silence elsewhere and in overlaps | none (current pseudo-duplex plan with oracle diarization) |
-| `audio-zs` | mix waveform + enrollment | target waveform | pretrained open TSE model (WeSep or SpeakerBeam), zero-shot |
-| `audio-ft` | as `audio-zs` | target waveform | `audio-zs` fine-tuned on our training mixes |
-| `mimi` | continuous Mimi latents of the mix (512-d, pre-quantization, 12.5 Hz) + enrollment | Mimi tokens (8 codebooks) of the target channel | trained from scratch on our training mixes |
-| `ceiling` | the clean target channel | Mimi round-trip of it | - |
+| `mixture` | - | the unprocessed mixture | floor (reference point for SI-SDRi) |
+| `audio-zs` | mixture waveform + enrollment | target waveform | open pretrained model (WeSep or SpeakerBeam family), no fine-tuning |
+| `audio-ft` | as `audio-zs` | target waveform | `audio-zs` fine-tuned on our mixtures |
+| `mimi` | Mimi latents of the mixture (512-d, pre-quantization, 12.5 Hz) + enrollment | Mimi tokens (8 codebooks) of the target, decoded | trained from scratch on our mixtures |
+| `ceiling` | the clean target | Mimi round-trip of the target | - |
 
-All outputs go through Mimi (encode → decode, 24 kHz) before scoring. This puts every arm in
-the form the dialogue model consumes. `ceiling` is the best any arm can reach.
+All arms are scored after a Mimi round-trip (encode → decode, 24 kHz), so every output is
+compared in the same form, and `ceiling` is the upper bound.
 
 ## Data
 
-- **Quick test (now):** Expresso improvised dialogues (stereo, one actor per channel, ~30 h,
-  4 speakers, CC BY-NC 4.0). Also the DuplexChat E0b set from Dauys (101 clips), with the
-  caveat that its channels are themselves separation output (DialogueSidon), not true ground
-  truth.
-- **Main test:** CANDOR held-out sessions (one channel per participant), using the same
-  session/speaker splits as Dauys. The Dauys sealed test sessions are never used here.
-- **Training mixes (`audio-ft`, `mimi`):** CANDOR training split summed to mono, plus
-  same-episode overlays from podcasts (two solo stretches of A and B from one episode, mixed
-  with overlaps of 0.2-2 s, so room and microphone match).
+- **Test:** Expresso improvised dialogues, held-out sessions, both channels as targets.
+  CANDOR is added when access arrives (K-T1).
+- **Training mixtures** (`audio-ft`, `mimi`): overlaid single-speaker clips (`kezek.mixing`):
+  both speakers from the same recording, conversation-like placement (alternating turns,
+  20% of transitions overlapped by 0.2-2 s), plus 20% full-overlap pairs. Sources: solo
+  stretches of English podcasts, and the non-test Expresso sessions *only if* their speakers
+  do not appear in the test sessions. Expresso has only 4 speakers, so in practice it is
+  test-only.
+- Same training data, steps and batch order for `audio-ft` and `mimi`.
 
 ## Metrics
 
-Regions come from VAD on the reference channels: *overlap* (both talk), *target solo*,
-*target silent* (only the other talks).
+From [docs/benchmark.md](../../docs/benchmark.md):
 
-- **Primary:** SI-SDR (dB) of the output on overlap regions.
-- **Guardrails:**
-  - Leakage: share of target-silent frames where VAD on the output fires.
-  - Preservation: SI-SDR on target-solo regions, compared with `ceiling`.
-  - Backchannel retention: share of short target turns (< 1 s) inside partner speech that
-    are present (VAD) in the output.
-  - Speaker similarity: ECAPA cosine between output and enrollment.
-  - Speed: hours of audio per hour on RTX 3060.
+- **Primary:** `sisdr_overlap`, SI-SDR on overlap regions.
+- **Guardrails:** `leakage` (output audible where only the other speaker talks), `sisdr_solo`
+  (target preserved where it talks alone).
+- **Report only:** `sisdri_overlap`, `residual_db`, speaker similarity to the enrollment,
+  speed on RTX 3060.
 
-## Outcome → action (thresholds to fix before launch)
+Two seeds for the trained arms.
+
+## Outcome → action (thresholds to confirm before launch)
+
+"Passes" means: `sisdr_overlap` ≥ 10 dB, `leakage` < 2%, `sisdr_solo` ≥ ceiling − 1 dB.
 
 | Outcome | Action |
 |---|---|
-| Best audio arm: overlap SI-SDR ≥ 10 dB, leakage < 2%, solo SI-SDR ≥ ceiling − 1 dB, backchannel retention ≥ 80% | Stereo through TSE becomes the main path for Dauys stage 2: original audio in solo regions, TSE in overlaps (hybrid) |
-| `mimi` within 2 dB of the best audio arm on overlap SI-SDR and passes the same guardrails | Use `mimi` (cheaper; one Mimi pass for everything) |
-| No arm passes | Keep cut-and-silence (`cut`); TSE is not used |
-| Grey zone (seeds disagree, a guardrail blocks) | The simpler option: `cut` over TSE, `mimi` over audio only if it passes outright |
-
-Two seeds for trained arms (`audio-ft`, `mimi`).
+| `mimi` passes and is within 2 dB of the best audio arm on `sisdr_overlap`, both seeds | Kezek is built on Mimi latents |
+| Best audio arm passes, `mimi` does not | Kezek is built on audio; Mimi is dropped |
+| `audio-zs` already passes | Fine-tuning is not a priority; K-T1 scales data for robustness (CANDOR, Kazakh) instead |
+| Nothing passes | K-T1 = larger audio model and more conversation-like training data; Mimi dropped |
+| Grey zone (seeds disagree, one guardrail blocks) | The simpler option: audio over Mimi only if Mimi fails outright; otherwise Mimi |
 
 ## Preparation
 
 - [ ] Download Expresso improvised dialogues; check channel mapping and crosstalk
-- [ ] Reference VAD on each channel; region masks (overlap / solo / silent)
-- [ ] Enrollment picker (solo stretches, other part of the session)
-- [ ] Scoring script (SI-SDR by region, leakage, backchannel retention, speaker similarity)
-- [ ] `audio-zs` with a pretrained TSE model, run on Expresso
-- [ ] CANDOR access (requested 2026-11-01), splits shared with Dauys
-- [ ] `mimi` arm: model and training script
-
-## Licensing note
-
-Expresso and CANDOR are research-only or non-commercial. Results can be published, but
-weights trained on them cannot be released under MIT without checking the terms first.
+- [ ] Fix the test sessions; `kezek prepare` for both channels of each
+- [ ] Pick the pretrained model for `audio-zs`; run it; first numbers
+- [ ] Mimi round-trip for all arms; `ceiling`
+- [ ] Training mixtures from podcast solo stretches
+- [ ] `mimi` model and training script
+- [ ] Speaker similarity (ECAPA) and bootstrap CIs in the scoring report
 
 ## Record
 

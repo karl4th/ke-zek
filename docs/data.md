@@ -1,44 +1,46 @@
 # Data
 
-Kezek never redistributes audio. The repository holds manifests (episode ids, source links,
-licenses, checksums, labels) and the code to fetch and process the audio from the original
-sources. Each source keeps its own license, and users are responsible for complying with it.
+Kezek never redistributes audio. The repository holds manifests (ids, source links,
+licenses, checksums) and the code to fetch and process audio from the original sources. Each
+source keeps its own license.
 
-## Sources
+## Test data: real two-channel conversations
 
-| Source | Use | Size | Labels | License / access |
-|---|---|---|---|---|
-| English podcasts (DuplexChat manifest, arXiv 2607.04941) | pseudo-label training (K-E0, K1), KezekBench v0 episodes | 282k h listed | two-speaker labels from pyannote-community-1 | per episode; check before use |
-| English podcasts outside DuplexChat | KezekBench v0 (10 episodes), domain check | small | hand annotation | per episode |
-| AMI Meeting Corpus | human-labelled training share | ~100 h | manual | CC BY 4.0 |
-| VoxConverse | human-labelled training share (dev), comparability (test) | ~64 h | manual | CC BY 4.0 |
-| CALLHOME (LDC) | optional human-labelled share | ~17 h | manual | LDC license |
-| DIHARD III | optional, if access is granted | ~34 h | manual | LDC license |
-| Kazakh / Kazakh-Russian conversation | KezekBench v1, possible fine-tuning | TBD | hand annotation | TBD; collection starts next |
+| Source | Content | Size | License / access |
+|---|---|---|---|
+| Expresso (Meta) | improvised dialogues, 4 actors, studio, 48 kHz stereo, one actor per channel | ~30 h | CC BY-NC 4.0 (non-commercial) |
+| CANDOR (BetterUp) | video-call conversations, one participant per channel, Zoom compression and echo cancellation | 1656 conversations, 850+ h | research use, by application (requested 2026-11-01) |
+| otoSpeech full-duplex | two-person English conversations, channel-separated, 48 kHz | ~105 h / ~280 h | non-commercial, gated; voice-identity uses prohibited |
+| Kazakh / Kazakh-Russian | own recordings, one microphone per speaker | TBD | ours |
 
-## Test / train separation
+CANDOR splits are shared with the Dauys project, which uses the same sessions: Dauys test and
+sealed-test sessions, and all sessions of their speakers, are never used for training here.
 
-- KezekBench episodes, **and every other episode of the same show**, are excluded from all
-  training data. Podcast hosts recur across episodes, so separating by episode alone would
-  leak speakers.
-- Exclusions are kept in `data/manifests/kezekbench_exclude.txt` (show ids) and checked by
-  the data tooling.
+## Training data: single-speaker clips for overlaying
+
+| Source | Content | Notes |
+|---|---|---|
+| English podcasts | solo stretches of each speaker within an episode | main source; both speakers from the same episode |
+| Training split of the stereo corpora | each channel's solo speech, or the real mix | real overlaps; speakers disjoint from test |
+| LibriSpeech / Libri-Light | read speech | small share, for speaker variety |
+| KSC2, Kazakh podcasts | Kazakh and Kazakh-Russian speech | for K-T2 |
+
+## Rules
+
+- **Speakers in a test set never appear in training**, in any form. For podcasts this means
+  whole shows are held out, since hosts recur across episodes.
+- Overlaid mixtures are for training only.
+- **Licenses:** results on research-only or non-commercial corpora can be published. Weights
+  trained on them are released only if the terms allow it.
 
 ## Manifest format
 
-JSON lines, one episode per line:
+JSON lines, one recording per line:
 
 ```json
-{"id": "dc-000123", "source": "duplexchat", "url": "https://...", "show_id": "...",
- "license": "...", "duration_s": 3605.2, "language": ["en"], "num_speakers": 2,
- "sha256": "...", "split": "train"}
+{"id": "expresso-ex04-ex01-001", "source": "expresso", "url": "...", "license": "CC-BY-NC-4.0",
+ "duration_s": 312.4, "language": ["en"], "channels": {"0": "ex04", "1": "ex01"},
+ "sha256": "...", "split": "test"}
 ```
 
 `split` is one of `train`, `dev`, `test`, `excluded`.
-
-## Pseudo-labels
-
-Teacher outputs are stored as RTTM per teacher and source, plus an agreement mask. Frames
-where the teachers disagree on activity or on the number of speakers are masked out of the
-loss, not relabelled. The teachers' versions and settings are recorded with every
-pseudo-label set.

@@ -1,80 +1,75 @@
-# Kezek v1 architecture
+# Kezek architecture
 
-Status: accepted design (2026-11-01). The encoder choice is settled by experiment K-E0.
-The goal is a fast, reliable pipeline from a mono podcast to per-speaker activity on Mimi
-frames to pseudo-duplex training data. A state-of-the-art DER is not the goal.
+Status: design draft (2026-11-01). The choice between the audio and the Mimi variant is made
+by experiment K-T0.
 
-## Pipeline
+## Task
 
 ```
-  Mono podcast (16/24 kHz, 2-4 speakers, up to hours)
-        │
-        ▼
-  Encoder: Mimi latents (512-d, pre-quantization, 12.5 Hz), frozen,
-           ONE pass shared with downstream codec encoding        ◄── alternative: WavLM-Base+ (K-E0)
-        │
-        ▼
-  Local segmentation: head of 5-15M params (Conformer or Mamba-2), ~10 s overlapping windows,
-           powerset output: silence / speaker k / pair of speakers      ◄── trained by distillation from
-           (VAD, local speakers and overlap from one softmax)                pyannote 3.1 + DiariZen, DuplexChat
-        │                                                                   labels, some human labels,
-        ▼                                                                   synthetic overlaps
-  Episode-level clustering: per-segment speaker embeddings (frozen ECAPA/WeSpeaker,
-           or a head on the same latents if K-E0 shows they carry speaker identity), AHC / VBx
-           → speaker ids consistent across the episode
-        │
-        ▼
-  Activity: [speakers × frames] at 12.5 Hz + overlap mask + per-frame confidence
-        │
-        ▼
-  Pseudo-duplex export: two main speakers → two channels (speech / silence),
-           quality filters → manifest for the dialogue model
+mixture  x = s_A + s_B        mono, exactly two speakers
+enrollment e_A                 5-30 s of speaker A alone, from elsewhere in the same recording
+                               (or any other recording of A)
+output   ŝ_A ≈ s_A             mono, same length and alignment as x
 ```
 
-## Components
+What a good output does, region by region:
 
-| Component | Does | Choice | Why |
-|---|---|---|---|
-| Encoder | audio → frame features | Mimi latents, frozen | Every hour is encoded with Mimi for the dialogue model anyway. One pass serves both, and the output is already on the right frame grid. Risk: little speaker information in the latents (the first codebook is distilled towards WavLM semantics). K-E0 tests this. Fallback: WavLM-Base+, 50 Hz mean-pooled to 12.5 Hz |
-| Local segmentation | per window: who speaks in each frame, where overlap is | powerset over 3 local speakers, max 2 simultaneous (7 classes); 5-15M head | One output gives VAD, speakers and overlap. Powerset distils well. The size is set by the speed target of over 1000x real time on an RTX 3060 |
-| Embeddings + clustering | episode-level speaker ids | frozen ECAPA/WeSpeaker + AHC first (as in pyannote 3.1); own embedding head only if K-E0 supports it | Known, cheap, nothing to invent |
-| Activity | final matrix | 12.5 Hz, plus overlap and confidence (agreement across windows and teachers) | Export filters need confidence |
-| Export | pseudo-duplex | the two main speakers must hold ≥ 85% of speech; overlap → silence in both channels plus a flag; low-confidence or third-speaker frames excluded; only runs ≥ 60 s | Diarization errors become echo and false turn timing in training. Dropping them is cheaper than learning them |
+| Region | Expected output |
+|---|---|
+| only A talks | A unchanged (no damage, no level change) |
+| only B talks | silence |
+| both talk | A alone, as clean as possible: the hard case and the primary metric |
+| neither talks | silence |
 
-## Training the segmentation head
+## Variants
 
-1. **Pseudo-labelled podcasts (bulk).** Run pyannote 3.1 and DiariZen on thousands of hours.
-   Keep frames where both teachers agree on activity and on the number of speakers. Mask the
-   rest out of the loss.
-2. **DuplexChat labels.** Two-speaker labels for 282k h of English podcasts
-   (pyannote-community-1) serve as an extra teacher at no cost.
-3. **Human annotation.** AMI, VoxConverse, CALLHOME, DIHARD if available. This is a small
-   share, so the student does not inherit the teachers' systematic errors.
-4. **Synthetic data, only for overlap.** Turns spliced with 0.2-2 s overlap, so that the
-   overlap classes are represented. Pseudo-labels contain little overlap, and it is unreliable.
-5. **Loss.** Cross-entropy over powerset classes, with the disagreement mask and up-weighted
-   overlap classes.
+### Audio (waveform in, waveform out)
 
-## Why a student can beat its teachers here
+A target speaker extraction network: a speaker encoder turns the enrollment into an
+embedding, and an extractor conditioned on it estimates the target waveform or a mask. We
+start from an open pretrained model (WeSep, SpeakerBeam family) and fine-tune it on our
+mixtures. This is the expected quality leader and the reference for the Mimi variant.
 
-- It is an order of magnitude faster: a 5-15M head on cached latents, against WavLM-Large
-  plus a Conformer.
-- Its output is native to Mimi frames, with no resampling.
-- It gives per-frame confidence and export filters, which teachers do not provide.
-- Agreement across an ensemble of teachers is usually more accurate than any single teacher.
-- It is trained in-domain. The teachers were trained on meetings and telephone speech, and the
-  largest gain is expected on podcasts.
+### Mimi (latents in, tokens out)
 
-## Checks before the first export
+- Input: continuous Mimi encoder latents of the mixture (512-d, before quantization,
+  12.5 Hz) plus an embedding of the enrollment.
+- Output: the 8 codebook tokens of the target, as Mimi would encode the clean target. They
+  are decoded back to audio by the Mimi decoder.
+- Why: 12.5 Hz instead of 16-24 kHz makes it orders of magnitude cheaper. For downstream
+  uses that consume Mimi tokens anyway, the output is ready to use.
+- Risk: the Mimi encoding of a mixture may already have lost detail of the quieter voice.
+  Continuous latents lose less than tokens, so they are the input.
+- Ceiling: the clean target passed through Mimi (encode → decode). No Mimi output can beat
+  it, so all arms are scored after a Mimi round-trip to compare like with like.
 
-- Listen to 100 random pseudo-duplex segments. Turn boundaries should match the labels by ear
-  (±100 ms), and B should not be audible in channel A.
-- Leakage on KezekBench.
-- Compare conversation statistics against DuplexChat (6.2 turn changes/min, 3.1
-  backchannels/min, 10% overlap). A large deviation means systematic diarization error.
+## Enrollment
 
-## Out of scope for v1
+- Solo speech of the target (the other speaker silent), 5-30 s, chosen by
+  `kezek.enrollment.pick_enrollment`.
+- In evaluation it never overlaps the scored segment.
+- At inference on real recordings without separate channels, solo stretches have to be found
+  first (voice activity plus speaker change detection), or the user supplies the sample.
 
-- Streaming (a small 10-30M encoder with under 500 ms latency), if a product needs it.
-- Separating overlapped speech: overlaps are detected and flagged, never separated.
-- Speech recognition and language identification.
+## Training data
+
+Overlaid single-speaker clips (the answer is known exactly), built by `kezek.mixing`:
+
+1. **Same-recording pairs.** Both speakers' clips come from one recording (same room,
+   microphone and processing), so the model must separate by voice and not by acoustics.
+2. **Conversation-like placement.** Turns alternate with gaps, short overlaps (0.2-2 s) and
+   backchannels, instead of two clips fully on top of each other. Real conversation is ~10%
+   overlap, so a model trained only on full overlap sees the wrong conditions.
+3. **Also full-overlap pairs** (classic Libri2Mix style) as a smaller share, because they are
+   the hardest case for learning to separate.
+4. **Same processing.** Loudness matched, and the same codecs as the test sources (MP3,
+   Zoom-style compression).
+
+## Testing
+
+Only real conversations recorded with one speaker per channel, summed to mono. Never test on
+overlaid clips: those numbers look good and say little.
+
+## Out of scope for now
+
+More than two speakers, extraction without enrollment, streaming.

@@ -1,6 +1,15 @@
 """Command-line interface.
 
-kezek evaluate --ref ref.rttm --hyp hyp.rttm [--uem test.uem] [--collar 0.0] [--json out.json]
+Prepare a test item from a real two-channel conversation (one speaker per channel):
+
+    kezek prepare conversation.wav --target-channel 0 --out items/conv01_ch0
+
+writes ``mixture.wav`` (channels summed), ``target.wav``, ``interferer.wav`` (the test
+segment) and ``enrollment.wav`` (target solo speech from outside the test segment).
+
+Score extraction outputs (``estimate.wav`` in each item directory):
+
+    kezek score items/* [--estimate estimate.wav] [--json report.json]
 """
 
 from __future__ import annotations
@@ -13,112 +22,116 @@ from pathlib import Path
 
 import numpy as np
 
-from kezek.annotation import end_time, read_rttm, read_uem, to_activity
-from kezek.frames import SCORING_FRAME_RATE_HZ, interval_to_mask, num_frames
-from kezek.metrics import DERResult, DuplexCounts, diarization_error, duplex_counts
+from kezek.enrollment import pick_enrollment
+from kezek.metrics import regions, score_extraction
 
 
-def evaluate(
-    ref_path: Path,
-    hyp_path: Path,
-    uem_path: Path | None = None,
-    collar_s: float = 0.0,
-    merge_gap_s: float = 0.25,
-    frame_rate: float = SCORING_FRAME_RATE_HZ,
+def _read(path: Path) -> tuple[np.ndarray, int]:
+    import soundfile as sf
+
+    audio, sr = sf.read(str(path), dtype="float64", always_2d=True)
+    return audio, sr
+
+
+def _write(path: Path, audio: np.ndarray, sr: int) -> None:
+    import soundfile as sf
+
+    sf.write(str(path), audio, sr, subtype="FLOAT")
+
+
+def prepare(
+    stereo_path: Path,
+    out_dir: Path,
+    target_channel: int,
+    start_s: float = 60.0,
+    end_s: float | None = None,
+    enroll_s: float = 10.0,
 ) -> dict:
-    refs = read_rttm(ref_path)
-    hyps = read_rttm(hyp_path)
-    uems = read_uem(uem_path) if uem_path else {}
-    files = sorted(uems) if uems else sorted(refs)
+    audio, sr = _read(stereo_path)
+    if audio.shape[1] != 2:
+        raise ValueError(f"{stereo_path}: expected 2 channels, got {audio.shape[1]}")
+    target, interferer = audio[:, target_channel], audio[:, 1 - target_channel]
+    mixture = target + interferer
+    end_s = len(mixture) / sr if end_s is None else end_s
+    reg = regions(target, interferer, sr)
+    enrollment, used = pick_enrollment(mixture, reg.solo, sr, enroll_s, exclude_s=(start_s, end_s))
 
-    per_file = {}
-    der_total, duplex_total = DERResult(), DuplexCounts()
-    for file_id in files:
-        ref_segs = refs.get(file_id, [])
-        hyp_segs = hyps.get(file_id, [])
-        duration = max(end_time(ref_segs), end_time(hyp_segs))
-        uem = None
-        if file_id in uems:
-            duration = max(duration, max(e for _, e in uems[file_id]))
-            n = num_frames(duration, frame_rate)
-            uem = np.zeros(n, dtype=bool)
-            for s, e in uems[file_id]:
-                uem |= interval_to_mask(s, e, n, frame_rate)
-        ref, _ = to_activity(ref_segs, duration, frame_rate)
-        hyp, _ = to_activity(hyp_segs, duration, frame_rate)
-        if ref.shape[0] == 0:
-            ref = np.zeros((1, hyp.shape[1]), dtype=bool)
-        if hyp.shape[0] == 0:
-            hyp = np.zeros((1, ref.shape[1]), dtype=bool)
-
-        d = diarization_error(ref, hyp, frame_rate, uem=uem, collar_s=collar_s)
-        x = duplex_counts(ref, hyp, frame_rate, merge_gap_s=merge_gap_s, uem=uem)
-        der_total += d
-        duplex_total += x
-        per_file[file_id] = {**d.as_dict(), **x.summary()}
-
-    return {
-        "settings": {
-            "collar_s": collar_s,
-            "merge_gap_s": merge_gap_s,
-            "frame_rate": frame_rate,
-            "num_files": len(files),
-            "missing_hypotheses": sorted(set(files) - set(hyps)),
-        },
-        "total": {**der_total.as_dict(), **duplex_total.summary()},
-        "files": per_file,
+    a, b = int(start_s * sr), int(end_s * sr)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _write(out_dir / "mixture.wav", mixture[a:b], sr)
+    _write(out_dir / "target.wav", target[a:b], sr)
+    _write(out_dir / "interferer.wav", interferer[a:b], sr)
+    _write(out_dir / "enrollment.wav", enrollment, sr)
+    meta = {
+        "source": str(stereo_path),
+        "target_channel": target_channel,
+        "segment_s": [start_s, end_s],
+        "enrollment_from_s": used,
+        "sample_rate": sr,
     }
+    (out_dir / "item.json").write_text(json.dumps(meta, indent=2))
+    return meta
 
 
-def _fmt(v: float, pct: bool = False) -> str:
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return f"{'-':>6}" if pct else f"{'-':>7}"
-    return f"{100 * v:6.2f}" if pct else f"{v:7.1f}"
+def score(item_dirs: list[Path], estimate_name: str = "estimate.wav") -> dict:
+    per_item, missing = {}, []
+    for d in item_dirs:
+        if not (d / estimate_name).exists():
+            missing.append(str(d))
+            continue
+        est, sr = _read(d / estimate_name)
+        tgt, sr_t = _read(d / "target.wav")
+        itf, _ = _read(d / "interferer.wav")
+        mix, _ = _read(d / "mixture.wav")
+        if sr != sr_t:
+            raise ValueError(f"{d}: estimate is {sr} Hz, reference is {sr_t} Hz")
+        n = len(tgt)
+        est = np.pad(est[:n, 0], (0, max(0, n - len(est))))
+        per_item[d.name] = score_extraction(est, tgt[:, 0], itf[:, 0], sr, mix[:, 0]).as_dict()
+
+    keys = next(iter(per_item.values())).keys() if per_item else []
+    mean = {k: float(np.nanmean([m[k] for m in per_item.values()])) for k in keys}
+    return {"num_items": len(per_item), "missing": missing, "mean": mean, "items": per_item}
 
 
-def _print_table(report: dict) -> None:
-    head = (
-        f"{'file':<32} {'DER%':>6} {'miss%':>6} {'FA%':>6} {'conf%':>6} "
-        f"{'bnd50':>7} {'bnd90':>7} {'leak%':>6} {'ovR%':>6} {'ovP%':>6}"
-    )
-    print(head)
-    print("-" * len(head))
-    rows = list(report["files"].items()) + [("TOTAL", report["total"])]
-    for name, m in rows:
-        print(
-            f"{name[:32]:<32} {_fmt(m['der'], True)} {_fmt(m['missed'], True)} "
-            f"{_fmt(m['false_alarm'], True)} {_fmt(m['confusion'], True)} "
-            f"{_fmt(m['boundary_median_ms'])} {_fmt(m['boundary_p90_ms'])} "
-            f"{_fmt(m['leakage'], True)} {_fmt(m['overlap_recall'], True)} "
-            f"{_fmt(m['overlap_precision'], True)}"
-        )
-    missing = report["settings"]["missing_hypotheses"]
-    if missing:
-        print(f"\nwarning: no hypothesis for {len(missing)} file(s): {', '.join(missing[:5])}")
+def _fmt(v: float) -> str:
+    return f"{'-':>8}" if v is None or math.isnan(v) else f"{v:8.2f}"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="kezek", description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(prog="kezek", description="Target speaker extraction tools")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    ev = sub.add_parser("evaluate", help="score a hypothesis RTTM against a reference RTTM")
-    ev.add_argument("--ref", type=Path, required=True)
-    ev.add_argument("--hyp", type=Path, required=True)
-    ev.add_argument("--uem", type=Path, help="scored regions; also defines the file list")
-    ev.add_argument("--collar", type=float, default=0.0, help="seconds (default: 0)")
-    ev.add_argument(
-        "--merge-gap", type=float, default=0.25, help="pause bridged into a turn (seconds)"
-    )
-    ev.add_argument("--json", type=Path, help="write the full report here")
+    p = sub.add_parser("prepare", help="make a test item from a two-channel conversation")
+    p.add_argument("stereo", type=Path)
+    p.add_argument("--target-channel", type=int, choices=[0, 1], required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--start", type=float, default=60.0, help="test segment start (s)")
+    p.add_argument("--end", type=float, default=None, help="test segment end (s)")
+    p.add_argument("--enroll", type=float, default=10.0, help="enrollment length (s)")
+
+    s = sub.add_parser("score", help="score estimate.wav in item directories")
+    s.add_argument("items", type=Path, nargs="+")
+    s.add_argument("--estimate", default="estimate.wav")
+    s.add_argument("--json", type=Path)
 
     args = parser.parse_args(argv)
-    if args.command == "evaluate":
-        report = evaluate(args.ref, args.hyp, args.uem, args.collar, args.merge_gap)
-        _print_table(report)
+    if args.command == "prepare":
+        meta = prepare(
+            args.stereo, args.out, args.target_channel, args.start, args.end, args.enroll
+        )
+        print(json.dumps(meta, indent=2))
+    elif args.command == "score":
+        report = score(args.items, args.estimate)
+        cols = ["sisdr_overlap", "sisdri_overlap", "sisdr_solo", "leakage", "residual_db"]
+        print(f"{'item':<28}" + "".join(f"{c[:8]:>9}" for c in cols))
+        for name, m in list(report["items"].items()) + [("MEAN", report["mean"])]:
+            print(f"{name[:28]:<28}" + "".join(" " + _fmt(m.get(c, math.nan)) for c in cols))
+        if report["missing"]:
+            print(f"\nwarning: no {args.estimate} in {len(report['missing'])} item(s)")
         if args.json:
             args.json.write_text(json.dumps(report, indent=2))
-        return 0
-    return 1
+    return 0
 
 
 if __name__ == "__main__":
