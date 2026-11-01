@@ -97,6 +97,19 @@ def evaluate(model, se, loader, dev):
     return m
 
 
+def init_tracker(a):
+    """Airon run tracking (pip install airon; AIRON_URL, AIRON_API_KEY). A no-op if unavailable."""
+    try:
+        import airon
+
+        return airon.init(
+            project="kezek", name=a.run_name, experiment="K-T0", config=vars(a),
+            tags=["K-T0", "audio", "scale"], total_steps=a.steps,
+        )
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--train-roots", nargs="+", required=True)
@@ -111,6 +124,7 @@ def main():
     ap.add_argument("--n-test", type=int, default=300)
     ap.add_argument("--out", default="/workspace/ckpt_scale")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--run-name", default="audio-train-clean-100")
     ap.add_argument("--allow-overlap", action="store_true", help="smoke test only: skip the speaker-disjoint check")
     a = ap.parse_args()
 
@@ -139,6 +153,7 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
 
+    run = init_tracker(a)
     log, t0 = [], time.time()
     for micro, (mix, t, _, et, _) in enumerate(train_dl, 1):
         mix, t, et = mix.to(dev), t.to(dev), et.to(dev)
@@ -154,14 +169,20 @@ def main():
         opt.step()
         opt.zero_grad(set_to_none=True)
         sched.step()
+        if run is not None and step % 10 == 0:
+            run.log({"train/loss": float(loss), "train/neg_sisdr": parts["neg_sisdr"], "train/spk": parts["spk"]}, step=step)
         if step % 100 == 0:
             print(f"step {step:6d}  loss {float(loss):7.3f}  {parts}  {time.time()-t0:6.0f}s", flush=True)
         if step % a.eval_every == 0 or step == a.steps:
             m = evaluate(model, se, test_dl, dev)
             print(f"EVAL step {step}: {json.dumps({k: round(v, 2) for k, v in m.items()})}", flush=True)
             log.append({"step": step, **m})
+            if run is not None:
+                run.log({f"eval/{k}": v for k, v in m.items()}, step=step)
             torch.save(model.state_dict(), f"{a.out}/kezek_tse.pt")
             json.dump(log, open(f"{a.out}/eval_log.json", "w"), indent=1)
+    if run is not None:
+        run.finish()
     print("TRAINING DONE", flush=True)
 
 
