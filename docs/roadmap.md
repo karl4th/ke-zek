@@ -34,6 +34,20 @@ Protocol: [experiments/K0](../experiments/K0/README.md).
 
 Protocol: [experiments/K-E0](../experiments/K-E0/README.md).
 
+## K-T0: target speaker extraction, audio vs Mimi latents (parallel with K0)
+
+- From a real two-person mix (stereo summed to mono), extract one speaker given 10-30 s of
+  their voice. If this is clean, stereo is built by extracting A and B, keeping overlaps and
+  backchannels that cut-and-silence loses.
+- Arms: cut-and-silence (oracle), pretrained audio TSE, fine-tuned audio TSE, TSE on Mimi
+  latents with Mimi tokens as output, and a Mimi round-trip ceiling.
+- Primary metric: SI-SDR on overlap regions. Guardrails: leakage, solo-region preservation,
+  backchannel retention, speaker similarity, speed.
+- Decision: TSE-based stereo becomes the main path if it passes the thresholds; the Mimi arm
+  is chosen if it is within 2 dB of audio. Otherwise cut-and-silence stays.
+
+Protocol: [experiments/K-T0](../experiments/K-T0/README.md).
+
 ## K1: the head at scale
 
 - Pseudo-labels for 5-10k h of podcasts (teachers plus DuplexChat labels), the head on the

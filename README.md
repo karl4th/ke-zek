@@ -103,6 +103,7 @@ Definitions: [docs/kezekbench.md](docs/kezekbench.md). Implementation:
 |---|---|---|
 | K0 | Baselines (pyannote 3.1, DiariZen, Sortformer, Silero VAD) and KezekBench v0: 5 h of hand-annotated English podcasts | in preparation |
 | K-E0 | Encoder choice: Mimi latents vs WavLM-Base+ under the same head | protocol drafted |
+| K-T0 | Target speaker extraction from a two-person mix: audio vs Mimi latents | protocol drafted |
 | K1 | Segmentation head at scale (5-10k h of pseudo-labels) and clustering | planned |
 | K2 | Pseudo-duplex export with quality filters, listening checks | planned |
 | K3 | KezekBench v1 (English, Kazakh / Kazakh-Russian, open sets), paper on arXiv | planned |
