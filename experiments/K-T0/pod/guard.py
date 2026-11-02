@@ -9,9 +9,11 @@ after the final files are confirmed on the Hub, so a failed upload costs money, 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import time
+import urllib.request
 
 from huggingface_hub import HfApi
 
@@ -31,6 +33,14 @@ def delete_pod() -> None:
     say(f"deleting pod {env['RUNPOD_POD_ID']}")
     r = subprocess.run(["runpodctl", "remove", "pod", env["RUNPOD_POD_ID"]], env=env, capture_output=True, text=True)
     say(f"runpodctl exit {r.returncode}: {r.stdout.strip()[:200]} {r.stderr.strip()[:200]}")
+    if r.returncode == 0:
+        return
+    query = 'mutation { podTerminate(input: {podId: "%s"}) }' % env["RUNPOD_POD_ID"]
+    req = urllib.request.Request(
+        "https://api.runpod.io/graphql", data=json.dumps({"query": query}).encode(),
+        headers={"Authorization": f"Bearer {env['RUNPOD_API_KEY']}", "Content-Type": "application/json"},
+    )
+    say(f"graphql: {urllib.request.urlopen(req, timeout=30).read()[:200]}")
 
 
 def main() -> None:
