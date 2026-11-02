@@ -1,6 +1,8 @@
 #!/bin/bash
 # Prepare a RunPod pod (image runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04) for train_scale.py.
-# Clone the repository to /workspace/ke-zek first. Put the data on the container disk: /workspace is a 20 GB volume.
+# Pod env: "GITHUB_API": "{{ RUNPOD_SECRET_GITHUB_API }}", "HF_TOKEN": "{{ RUNPOD_SECRET_HF_TOKEN }}",
+# "AIRON_API_KEY": "{{ RUNPOD_SECRET_AIRON_API_KEY }}". Clone the repository to /workspace/ke-zek first.
+# Put the data on the container disk: /workspace is a 20 GB volume.
 set -x
 mkdir -p /root/d/dl /root/d/extracted && cd /root/d || exit 1
 printf 'torch==2.4.1\ntorchaudio==2.4.1\nhuggingface_hub==0.25.2\nnumpy<2.1\n' > constraints.txt

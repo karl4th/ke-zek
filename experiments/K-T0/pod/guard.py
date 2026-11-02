@@ -1,7 +1,7 @@
 """Keep a pod run safe without any other machine: push checkpoints to Hugging Face, delete the pod at the end.
 
-Reads the token from <root>/hf.token and waits until the file appears. The pod is deleted only
-after the final files are confirmed on the Hub, so a failed upload costs money, not the model.
+HF_TOKEN comes from the RunPod secret in the pod's env. The pod is deleted only after the final
+files are confirmed on the Hub, so a failed upload costs money, not the model.
 
     python guard.py --root /root/d --run kezek-run-360 --repo kezek-k-t0c
 """
@@ -51,7 +51,7 @@ def main() -> None:
     ap.add_argument("--every", type=int, default=60)
     a = ap.parse_args()
 
-    run, token_file = f"{a.root}/{a.run}", f"{a.root}/hf.token"
+    run = f"{a.root}/{a.run}"
     archive = f"{a.root}/archive"
     api, repo, sent, archived = None, None, None, not os.path.isdir(archive)
 
@@ -61,11 +61,9 @@ def main() -> None:
 
     while True:
         time.sleep(a.every)
-        if not os.path.exists(token_file):
-            continue
         try:
             if api is None:
-                hub = HfApi(token=open(token_file).read().strip())
+                hub = HfApi(token=pod_env()["HF_TOKEN"])
                 repo = f"{hub.whoami()['name']}/{a.repo}"
                 hub.create_repo(repo, private=True, exist_ok=True)
                 api = hub
