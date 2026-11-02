@@ -120,12 +120,14 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--spk-weight", type=float, default=0.1)
     ap.add_argument("--eval-every", type=int, default=1000)
+    ap.add_argument("--first-eval", type=int, default=500, help="one early eval, before the first eval-every")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--n-test", type=int, default=300)
     ap.add_argument("--out", default="/workspace/ckpt_scale")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-name", default="audio-train-clean-100")
     ap.add_argument("--allow-overlap", action="store_true", help="smoke test only: skip the speaker-disjoint check")
+    ap.add_argument("--resume", action="store_true", help="continue from <out>/last.pt if it exists")
     a = ap.parse_args()
 
     dev = "cuda"
@@ -139,9 +141,15 @@ def main():
           f"test: {len(test_idx)} speakers, {sum(len(v) for v in test_idx.values())} utts "
           f"(index {time.time()-t0:.0f}s)", flush=True)
 
+    ckpt_path = f"{a.out}/last.pt"
+    ckpt = torch.load(ckpt_path, map_location="cpu") if a.resume and os.path.exists(ckpt_path) else None
+    start = ckpt["step"] if ckpt else 0
+
+    # Mixtures are a function of (seed, i), so resuming skips the ones already used.
+    train_set = MixDataset(train_idx, a.steps * a.accum * a.bs, seed=a.seed)
     train_dl = torch.utils.data.DataLoader(
-        MixDataset(train_idx, a.steps * a.accum * a.bs, seed=a.seed), batch_size=a.bs, num_workers=a.workers,
-        shuffle=False, drop_last=True, prefetch_factor=4,
+        torch.utils.data.Subset(train_set, range(start * a.accum * a.bs, len(train_set))),
+        batch_size=a.bs, num_workers=a.workers, shuffle=False, drop_last=True, prefetch_factor=4,
     )
     test_dl = torch.utils.data.DataLoader(
         MixDataset(test_idx, a.n_test, seed=10_000), batch_size=20, num_workers=2, shuffle=False
@@ -152,10 +160,17 @@ def main():
     print("params (M): %.2f" % (sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=a.steps, pct_start=0.05)
+    log = []
+    if ckpt:
+        model.load_state_dict(ckpt["model"])
+        opt.load_state_dict(ckpt["opt"])
+        sched.load_state_dict(ckpt["sched"])
+        log = ckpt["log"]
+        print(f"resumed from step {start}", flush=True)
 
     run = init_tracker(a)
-    log, t0 = [], time.time()
-    for micro, (mix, t, _, et, _) in enumerate(train_dl, 1):
+    t0 = time.time()
+    for micro, (mix, t, _, et, _) in enumerate(train_dl, start * a.accum + 1):
         mix, t, et = mix.to(dev), t.to(dev), et.to(dev)
         with torch.no_grad():
             d = se(et)
@@ -173,14 +188,20 @@ def main():
             run.log({"train/loss": float(loss), "train/neg_sisdr": parts["neg_sisdr"], "train/spk": parts["spk"]}, step=step)
         if step % 100 == 0:
             print(f"step {step:6d}  loss {float(loss):7.3f}  {parts}  {time.time()-t0:6.0f}s", flush=True)
-        if step % a.eval_every == 0 or step == a.steps:
+        if step % a.eval_every == 0 or step in (a.first_eval, a.steps):
             m = evaluate(model, se, test_dl, dev)
             print(f"EVAL step {step}: {json.dumps({k: round(v, 2) for k, v in m.items()})}", flush=True)
             log.append({"step": step, **m})
             if run is not None:
                 run.log({f"eval/{k}": v for k, v in m.items()}, step=step)
             torch.save(model.state_dict(), f"{a.out}/kezek_tse.pt")
+            if m["sisdri"] >= max(e["sisdri"] for e in log):
+                torch.save(model.state_dict(), f"{a.out}/best.pt")
             json.dump(log, open(f"{a.out}/eval_log.json", "w"), indent=1)
+            state = {"step": step, "model": model.state_dict(), "opt": opt.state_dict(),
+                     "sched": sched.state_dict(), "log": log}
+            torch.save(state, f"{ckpt_path}.tmp")
+            os.replace(f"{ckpt_path}.tmp", ckpt_path)  # a crash during the save keeps the old file
     if run is not None:
         run.finish()
     print("TRAINING DONE", flush=True)
