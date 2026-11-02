@@ -172,9 +172,11 @@ def main():
         log = ckpt["log"]
         print(f"resumed from step {start}", flush=True)
 
+    # Fork the workers first: a worker forked while the tracker runs nvidia-smi holds its pipe and hangs the tracker.
+    batches = iter(train_dl)
     run = init_tracker(a)
     t0 = time.time()
-    for micro, (mix, t, _, et, _) in enumerate(train_dl, start * a.accum + 1):
+    for micro, (mix, t, _, et, _) in enumerate(batches, start * a.accum + 1):
         mix, t, et = mix.to(dev, non_blocking=True), t.to(dev, non_blocking=True), et.to(dev, non_blocking=True)
         with torch.no_grad():
             d = se(et)
