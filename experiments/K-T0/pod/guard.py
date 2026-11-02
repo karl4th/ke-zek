@@ -3,7 +3,7 @@
 HF_TOKEN comes from the RunPod secret in the pod's env. The pod is deleted only after the final
 files are confirmed on the Hub, so a failed upload costs money, not the model.
 
-    python guard.py --root /root/d --run kezek-run-360 --repo kezek-k-t0c
+    python guard.py --root /root/d --run kezek-run-360 --repo manifestro/kezek-k-t0c
 """
 
 from __future__ import annotations
@@ -47,13 +47,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
     ap.add_argument("--run", required=True, help="run folder inside --root")
-    ap.add_argument("--repo", required=True, help="private model repo name, created under the token's account")
+    ap.add_argument("--repo", required=True, help="private model repo, owner/name")
     ap.add_argument("--every", type=int, default=60)
     a = ap.parse_args()
 
     run = f"{a.root}/{a.run}"
     archive = f"{a.root}/archive"
-    api, repo, sent, archived = None, None, None, not os.path.isdir(archive)
+    api, repo, sent, archived = None, a.repo, None, not os.path.isdir(archive)
 
     def push(names: list[str]) -> None:
         for name in names:
@@ -64,7 +64,6 @@ def main() -> None:
         try:
             if api is None:
                 hub = HfApi(token=pod_env()["HF_TOKEN"])
-                repo = f"{hub.whoami()['name']}/{a.repo}"
                 hub.create_repo(repo, private=True, exist_ok=True)
                 api = hub
                 say(f"uploading to {repo}")
