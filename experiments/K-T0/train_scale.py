@@ -106,7 +106,8 @@ def init_tracker(a):
             project="kezek", name=a.run_name, experiment="K-T0", config=vars(a),
             tags=["K-T0", "audio", "scale"], total_steps=a.steps,
         )
-    except Exception:
+    except Exception as e:
+        print(f"airon tracking is off: {type(e).__name__}: {e}", flush=True)
         return None
 
 
@@ -128,9 +129,11 @@ def main():
     ap.add_argument("--run-name", default="audio-train-clean-100")
     ap.add_argument("--allow-overlap", action="store_true", help="smoke test only: skip the speaker-disjoint check")
     ap.add_argument("--resume", action="store_true", help="continue from <out>/last.pt if it exists")
+    ap.add_argument("--fast", action="store_true", help="cudnn.benchmark and pin_memory; on a pod also set OMP_NUM_THREADS=1")
     a = ap.parse_args()
 
     dev = "cuda"
+    torch.backends.cudnn.benchmark = a.fast
     torch.manual_seed(a.seed)
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
@@ -150,6 +153,7 @@ def main():
     train_dl = torch.utils.data.DataLoader(
         torch.utils.data.Subset(train_set, range(start * a.accum * a.bs, len(train_set))),
         batch_size=a.bs, num_workers=a.workers, shuffle=False, drop_last=True, prefetch_factor=4,
+        pin_memory=a.fast,
     )
     test_dl = torch.utils.data.DataLoader(
         MixDataset(test_idx, a.n_test, seed=10_000), batch_size=20, num_workers=2, shuffle=False
@@ -171,7 +175,7 @@ def main():
     run = init_tracker(a)
     t0 = time.time()
     for micro, (mix, t, _, et, _) in enumerate(train_dl, start * a.accum + 1):
-        mix, t, et = mix.to(dev), t.to(dev), et.to(dev)
+        mix, t, et = mix.to(dev, non_blocking=True), t.to(dev, non_blocking=True), et.to(dev, non_blocking=True)
         with torch.no_grad():
             d = se(et)
         est = model(mix, d)
