@@ -139,6 +139,11 @@ def test_clean_share_and_no_musan_speech(bank, tmp_path):
     sf.write(tmp_path / "musan" / "speech" / "s.wav", np.zeros(SR), SR)
     with pytest.raises(ValueError):
         DomainBank.from_dirs(noise_dirs=[tmp_path / "musan"])
+    os.makedirs(tmp_path / "rirs")
+    for name in ("RVB2014_type1_rir_room_a.wav", "RVB2014_type1_noise_room_1.wav"):
+        sf.write(tmp_path / "rirs" / name, np.zeros(100), SR)
+    rirs = DomainBank.from_dirs(rir_dirs=[tmp_path / "rirs"]).rirs
+    assert [os.path.basename(f) for f in rirs] == ["RVB2014_type1_rir_room_a.wav"]
 
 
 @pytest.mark.skipif(not augment.has_ffmpeg(), reason="needs ffmpeg")

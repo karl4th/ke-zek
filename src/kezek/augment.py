@@ -74,7 +74,9 @@ class DomainBank:
         bad = [f for f in noises + music if _is_speech(f)]
         if bad:
             raise ValueError(f"speech files in the noise/music bank, e.g. {bad[0]}")
-        return cls(rirs=_files(list(rir_dirs)), noises=noises, music=music)
+        # RIRS_NOISES/real_rirs_isotropic_noises keeps room noise recordings next to the RIRs
+        rirs = [f for f in _files(list(rir_dirs)) if "noise" not in os.path.basename(f).lower()]
+        return cls(rirs=rirs, noises=noises, music=music)
 
     def __post_init__(self):
         self._rir_cache: dict[str, np.ndarray] = {}

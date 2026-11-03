@@ -26,7 +26,7 @@ python experiments/K-T1/overfit_check.py --init kezek_tse.pt --root .../dev-clea
 python experiments/K-T1/train.py --init kezek_tse.pt \
     --train-roots .../train-clean-100 .../train-clean-360 --val-root .../dev-clean \
     --rir-dirs .../RIRS_NOISES/simulated_rirs .../RIRS_NOISES/real_rirs_isotropic_noises \
-    --noise-dirs .../musan/noise --music-dirs .../musan/music --out run
+    --noise-dirs .../musan/noise .../dns_freesound --music-dirs .../musan/music --out run
 python experiments/K-T1/evaluate.py --checkpoint run/kezek_tse.pt --val-root .../dev-clean   # validation
 python experiments/K-T1/evaluate.py --checkpoint run/kezek_tse.pt --final --tests tests.json  # tests
 ```
@@ -37,3 +37,6 @@ target-solo level on validation is off by more than 3 dB twice in a row from ste
 `run.sh` does not restart it.
 
 Test lists are read only with `--final`. MUSAN `speech` is refused as background.
+
+Background sources and licenses: MUSAN noise and music (CC BY 4.0), the Freesound part of the
+DNS Challenge noise (CC0 1.0), RIRS_NOISES (Apache 2.0).

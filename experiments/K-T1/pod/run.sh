@@ -14,7 +14,7 @@ for try in $(seq 1 20); do
     --train-roots extracted/LibriSpeech/train-clean-100 extracted/LibriSpeech/train-clean-360 \
     --val-root extracted/LibriSpeech/dev-clean \
     --rir-dirs extracted/RIRS_NOISES/simulated_rirs extracted/RIRS_NOISES/real_rirs_isotropic_noises \
-    --noise-dirs extracted/musan/noise --music-dirs extracted/musan/music \
+    --noise-dirs extracted/musan/noise extracted/dns_freesound --music-dirs extracted/musan/music \
     --steps 100000 --bs 8 --eval-every 5000 --seed $SEED --workers 16 --fast \
     --out $O --run-name k-t1-seed$SEED --resume >> $O/log.txt 2>&1
   code=$?
