@@ -49,6 +49,7 @@ def main() -> None:
     ap.add_argument("--run", required=True, help="run folder inside --root")
     ap.add_argument("--repo", required=True, help="private model repo, owner/name")
     ap.add_argument("--every", type=int, default=60)
+    ap.add_argument("--keep-pod", action="store_true", help="upload the final files, keep the pod")
     a = ap.parse_args()
 
     run = f"{a.root}/{a.run}"
@@ -73,13 +74,18 @@ def main() -> None:
                 say("archive uploaded")
 
             log = open(f"{run}/log.txt", errors="ignore").read()
-            if "TRAINING DONE" in log:
+            # WATCHDOG STOP (K-T1): the run stopped itself; save what is there the same way
+            if "TRAINING DONE" in log or "WATCHDOG STOP" in log:
                 names = ["last.pt", "best.pt", "kezek_tse.pt", "eval_log.json", "log.txt"]
+                names = [n for n in names if os.path.exists(f"{run}/{n}")]
                 push(names)
                 remote = {f.rfilename: f.size for f in api.repo_info(repo, files_metadata=True).siblings}
                 if all(remote.get(n) == os.path.getsize(f"{run}/{n}") for n in names):
                     say("final files confirmed on the Hub")
-                    delete_pod()
+                    if a.keep_pod:
+                        say("--keep-pod: the pod is left running")
+                    else:
+                        delete_pod()
                     return
                 say("final files do not match the Hub yet")
                 continue
