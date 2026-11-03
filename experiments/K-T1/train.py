@@ -113,11 +113,16 @@ def main():
     )
     man = manifest(vars(a), bank, train_idx, val_idx, a.init)
     man_path = f"{a.out}/manifest.json"
+    man = json.loads(json.dumps(man))  # same types as the saved file (tuples become lists)
     if os.path.exists(man_path) and a.resume:
         old = json.load(open(man_path))
-        changed = [k for k in man if k != "args" and old.get(k) != man[k]]
+        skip = ("args", "commit", "dirty", "resumes")
+        changed = [k for k in man if k not in skip and old.get(k) != man[k]]
         if changed:
-            raise SystemExit(f"resume with different code or data: {changed} (see {man_path})")
+            raise SystemExit(f"resume with different data or settings: {changed} (see {man_path})")
+        # the first commit stays the run's commit; every resume is recorded with its own
+        resume = {"commit": man["commit"], "dirty": man["dirty"]}
+        man = {**old, "resumes": old.get("resumes", []) + [resume]}
     json.dump(man, open(man_path, "w"), indent=1)
     print(f"manifest: commit {man['commit']} dirty {man['dirty']}", flush=True)
 
