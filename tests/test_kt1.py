@@ -248,6 +248,20 @@ def test_backchannel_recall():
     assert (s_drop["bc_hits"], s_drop["bc_total"]) == (0, 1)
 
 
+def test_bootstrap_intervals():
+    rng = np.random.default_rng(10)
+    x = rng.normal(5.0, 2.0, 400)
+    lo, hi = metrics.share_ci(x)
+    assert lo < x.mean() < hi and hi - lo == pytest.approx(2 * 1.96 * 2.0 / 20, rel=0.2)
+    t, o, a_t, a_o, disp, l_ref = _window()
+    sc = [
+        metrics.segment_scores(k * t, t, o, t + o, a_t, a_o, disp, l_ref) for k in (0.5, 1.0, 2.0)
+    ]
+    ci = metrics.bootstrap_ci(sc, n_boot=200)
+    lo, hi = ci["target_solo_level_db"]
+    assert -6.1 <= lo <= hi <= 6.1
+
+
 def test_wrong_speaker_only_on_windows_with_target():
     cos_t, cos_o = np.array([0.9, 0.1, 0.2]), np.array([0.1, 0.9, 0.9])
     share, used, skipped = metrics.wrong_speaker(cos_t, cos_o, np.array([300, 300, 100]))

@@ -25,7 +25,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(__file__))
 from evaluate import WATCH_DB, WATCH_FROM, validate, watchdog_tripped  # noqa: E402
-from kt1_data import ConversationDataset, build_index, collate  # noqa: E402
+from kt1_data import ConversationDataset, build_index, collate, manifest  # noqa: E402
 
 from kezek.augment import DomainBank  # noqa: E402
 from kezek.losses import kt1_loss  # noqa: E402
@@ -34,7 +34,7 @@ from kezek.model import KezekTSE, SpeakerEncoder  # noqa: E402
 WATCHDOG_EXIT = 3
 
 
-def init_tracker(a):
+def init_tracker(a, man: dict):
     """Airon run tracking (pip install airon; AIRON_URL, AIRON_API_KEY). A no-op if unavailable."""
     try:
         import airon
@@ -43,7 +43,7 @@ def init_tracker(a):
             project="kezek",
             name=a.run_name,
             experiment="K-T1",
-            config=vars(a),
+            config={**vars(a), "manifest": {k: v for k, v in man.items() if k != "args"}},
             tags=["K-T1", "audio", "conversation"],
             total_steps=a.steps,
         )
@@ -87,6 +87,15 @@ def main():
     )
     ap.add_argument("--fast", action="store_true", help="cudnn.benchmark and pin_memory")
     ap.add_argument("--no-tracker", action="store_true")
+    ap.add_argument(
+        "--keep-every",
+        type=int,
+        default=0,
+        help="also keep step_<N>.pt at these steps (diagnostics)",
+    )
+    ap.add_argument(
+        "--stop-at", type=int, default=0, help="stop here; the LR schedule still spans --steps"
+    )
     a = ap.parse_args()
 
     dev = a.device
@@ -102,6 +111,15 @@ def main():
         f"noises {len(bank.noises)} music {len(bank.music)}",
         flush=True,
     )
+    man = manifest(vars(a), bank, train_idx, val_idx, a.init)
+    man_path = f"{a.out}/manifest.json"
+    if os.path.exists(man_path) and a.resume:
+        old = json.load(open(man_path))
+        changed = [k for k in man if k != "args" and old.get(k) != man[k]]
+        if changed:
+            raise SystemExit(f"resume with different code or data: {changed} (see {man_path})")
+    json.dump(man, open(man_path, "w"), indent=1)
+    print(f"manifest: commit {man['commit']} dirty {man['dirty']}", flush=True)
 
     ckpt_path = f"{a.out}/last.pt"
     ckpt = (
@@ -139,7 +157,7 @@ def main():
         print(f"resumed from step {start}", flush=True)
 
     batches = iter(train_dl)  # fork the workers before the tracker starts
-    run = None if a.no_tracker else init_tracker(a)
+    run = None if a.no_tracker else init_tracker(a, man)
     t0 = time.time()
     for step, b in enumerate(batches, start + 1):
         mix, clean = b["mix"].to(dev), b["clean"].to(dev)
@@ -164,7 +182,7 @@ def main():
                 f"step {step:6d}  loss {loss.item():7.3f}  {parts}  {time.time() - t0:6.0f}s",
                 flush=True,
             )
-        if step % a.eval_every == 0 or step == a.steps:
+        if step % a.eval_every == 0 or step in (a.steps, a.stop_at):
             m = validate(model, se, val_set, dev)
             print(
                 f"EVAL step {step}: {json.dumps({k: round(v, 2) for k, v in m.items()})}",
@@ -175,6 +193,8 @@ def main():
             if run is not None:
                 run.log({f"val/{k}": v for k, v in m.items()}, step=step)
             torch.save(model.state_dict(), f"{a.out}/kezek_tse.pt")
+            if a.keep_every and step % a.keep_every == 0:
+                torch.save(model.state_dict(), f"{a.out}/step_{step}.pt")
             score = m["all/overlap_sisdr"]
             if np.isfinite(score) and score >= max(e["all/overlap_sisdr"] for e in log):
                 torch.save(model.state_dict(), f"{a.out}/best.pt")
@@ -197,7 +217,7 @@ def main():
                 if run is not None:
                     run.finish()
                 sys.exit(WATCHDOG_EXIT)
-        if step >= a.steps:
+        if step >= min(a.steps, a.stop_at or a.steps):
             break
     if run is not None:
         run.finish()

@@ -252,6 +252,33 @@ def aggregate(scores: list[dict]) -> dict[str, float]:
     return out
 
 
+def bootstrap_ci(
+    scores: list[dict], n_boot: int = 1000, seed: int = 0, level: float = 0.95
+) -> dict[str, list[float]]:
+    """95% bootstrap interval of every ``aggregate`` metric, resampling windows or recordings."""
+    rng = np.random.default_rng(seed)
+    n = len(scores)
+    boot = [aggregate([scores[i] for i in rng.integers(0, n, n)]) for _ in range(n_boot)]
+    q = (100 * (1 - level) / 2, 100 * (1 + level) / 2)
+    out = {}
+    for k in boot[0]:
+        v = np.array([b[k] for b in boot], dtype=float)
+        v = v[np.isfinite(v)]
+        out[k] = [float(np.percentile(v, q[0])), float(np.percentile(v, q[1]))] if len(v) else []
+    return out
+
+
+def share_ci(flags, n_boot: int = 1000, seed: int = 0, level: float = 0.95) -> list[float]:
+    """95% bootstrap interval of the mean of per-window 0/1 or real values."""
+    x = np.asarray(flags, dtype=float)
+    if not len(x):
+        return []
+    rng = np.random.default_rng(seed)
+    m = x[rng.integers(0, len(x), (n_boot, len(x)))].mean(axis=1)
+    q = (100 * (1 - level) / 2, 100 * (1 + level) / 2)
+    return [float(np.percentile(m, q[0])), float(np.percentile(m, q[1]))]
+
+
 def wrong_speaker(
     cos_target: np.ndarray, cos_other: np.ndarray, act_t_frames: np.ndarray, min_frames: int = 150
 ):

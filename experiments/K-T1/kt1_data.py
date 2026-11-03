@@ -7,6 +7,7 @@ validation set is fixed.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +39,85 @@ def build_index(roots: list[str], cache: str | None = None) -> dict[str, list[st
     if cache:
         json.dump(index, open(cache, "w"))
     return index
+
+
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _list_hash(paths: list[str], roots: list[str]) -> str:
+    """Hash of a file list, independent of where the data lives on disk."""
+    rel = []
+    for p in paths:
+        r = next(
+            (
+                os.path.relpath(p, root)
+                for root in roots
+                if os.path.abspath(p).startswith(os.path.abspath(root))
+            ),
+            p,
+        )
+        rel.append(r.replace(os.sep, "/"))
+    return hashlib.sha256("\n".join(sorted(rel)).encode()).hexdigest()
+
+
+def manifest(args: dict, bank: DomainBank, train_idx: dict, val_idx: dict, init: str) -> dict:
+    """What a run was made of: code, start checkpoint, data and background lists (as hashes)."""
+    import subprocess
+
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(__file__),
+            check=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(__file__),
+            ).stdout.strip()
+        )
+    except Exception:
+        commit, dirty = None, None
+    utts = lambda idx: [u for v in idx.values() for u in v]  # noqa: E731
+    return {
+        "commit": commit,
+        "dirty": dirty,
+        "args": args,
+        "init_sha256": sha256_file(init),
+        "train": {
+            "speakers": len(train_idx),
+            "utterances": len(utts(train_idx)),
+            "list_sha256": _list_hash(utts(train_idx), args["train_roots"]),
+        },
+        "val": {
+            "speakers": len(val_idx),
+            "utterances": len(utts(val_idx)),
+            "list_sha256": _list_hash(utts(val_idx), [args["val_root"]]),
+        },
+        "rirs": {"n": len(bank.rirs), "list_sha256": _list_hash(bank.rirs, args["rir_dirs"])},
+        "noises": {
+            "n": len(bank.noises),
+            "list_sha256": _list_hash(bank.noises, args["noise_dirs"]),
+        },
+        "music": {"n": len(bank.music), "list_sha256": _list_hash(bank.music, args["music_dirs"])},
+        "conversation": vars_of(ConversationConfig()),
+        "augment": vars_of(AugmentConfig()),
+    }
+
+
+def vars_of(cfg) -> dict:
+    from dataclasses import asdict
+
+    return asdict(cfg)
 
 
 def _read(path: str) -> np.ndarray:

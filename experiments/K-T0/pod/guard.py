@@ -77,7 +77,7 @@ def main() -> None:
             # WATCHDOG STOP (K-T1): the run stopped itself; save what is there the same way
             if "TRAINING DONE" in log or "WATCHDOG STOP" in log:
                 names = ["last.pt", "best.pt", "kezek_tse.pt", "eval_log.json", "log.txt"]
-                names = [n for n in names if os.path.exists(f"{run}/{n}")]
+                names = [n for n in names + ["manifest.json"] if os.path.exists(f"{run}/{n}")]
                 push(names)
                 remote = {f.rfilename: f.size for f in api.repo_info(repo, files_metadata=True).siblings}
                 if all(remote.get(n) == os.path.getsize(f"{run}/{n}") for n in names):

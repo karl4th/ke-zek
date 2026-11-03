@@ -44,9 +44,10 @@ def watchdog_tripped(
 
 
 @torch.no_grad()
-def validate(model, se, dataset, device: str, batch: int = 20) -> dict[str, float]:
+def validate(model, se, dataset, device: str, batch: int = 20, ci: bool = False) -> dict:
     """300 fixed simulated windows. Gate metrics pooled; split by clean/augmented window and by
-    the sign of SIR; speaker check on windows with the target active >= 1.5 s."""
+    the sign of SIR; speaker check on windows with the target active >= 1.5 s. With ``ci``,
+    95% bootstrap intervals over windows are added as ``<metric>_ci``."""
     model.eval()
     groups: dict[str, list[dict]] = {
         "all": [],
@@ -104,7 +105,57 @@ def validate(model, se, dataset, device: str, batch: int = 20) -> dict[str, floa
             "pick_acc": float(np.mean(np.array(pick)[ok])) if ok.any() else float("nan"),
         }
     )
+    if ci:
+        for g, sc in groups.items():
+            if sc:
+                out.update({f"{g}/{k}_ci": v for k, v in metrics.bootstrap_ci(sc).items()})
+        wrong = (np.array(cos_t) < np.array(cos_o))[ok]
+        out["wrong_speaker_ci"] = metrics.share_ci(wrong)
+        out["pick_acc_ci"] = metrics.share_ci(np.array(pick)[ok])
     return out
+
+
+@torch.no_grad()
+def dev_clean_300(model, se, root: str, device: str) -> dict:
+    """The 300 K-T0c test mixtures (experiments/K-T0/train_scale.py, seed 10 000), scored as in
+    K-T0c: SI-SDRi on the whole 4 s mixture; pick_acc with the other speaker's enrollment.
+    The same code made the K-T0c numbers, so K-T0c must reproduce them here."""
+    import importlib.util
+
+    from kezek.model import si_sdr_loss
+
+    path = os.path.join(os.path.dirname(__file__), "..", "K-T0", "train_scale.py")
+    spec = importlib.util.spec_from_file_location("k_t0_train_scale", path)
+    ts = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ts)
+    dl = torch.utils.data.DataLoader(
+        ts.MixDataset(ts.build_index([root]), 300, seed=10_000), batch_size=20, num_workers=0
+    )
+    model.eval()
+    imp, pick = [], []
+    for mix, t, _, et, ei in dl:
+        mix, t, et, ei = (x.to(device) for x in (mix, t, et, ei))
+        right, wrong = model(mix, se(et)), model(mix, se(ei))
+        est, mx = (-si_sdr_loss(right, t)).tolist(), (-si_sdr_loss(mix, t)).tolist()
+        wr = (-si_sdr_loss(wrong, t)).tolist()
+        imp += [e - m for e, m in zip(est, mx, strict=True)]
+        pick += [e > w for e, w in zip(est, wr, strict=True)]
+    model.train()
+    return {
+        "sisdri": float(np.mean(imp)),
+        "sisdri_ci": metrics.share_ci(imp),
+        "pick_acc": float(np.mean(pick)),
+        "pick_acc_ci": metrics.share_ci(pick),
+        "n": len(imp),
+        "per_mixture_sisdri": imp,
+    }
+
+
+def paired_delta(new: list[float], base: list[float]) -> dict:
+    """Mean of new - base over the same items with a 95% bootstrap interval: the comparison
+    against K-T0c on the same 300 mixtures is far tighter than either interval alone."""
+    d = np.asarray(new, float) - np.asarray(base, float)
+    return {"delta": float(d.mean()), "delta_ci": metrics.share_ci(d), "n": len(d)}
 
 
 def labels_from_tracks(target: np.ndarray, other: np.ndarray, disputed_s: float = 0.15):
@@ -165,10 +216,14 @@ def parse(argv=None):
         "--final", action="store_true", help="read the test lists (only for the final evaluation)"
     )
     ap.add_argument("--tests", help="JSON test list; read only with --final")
+    ap.add_argument(
+        "--dev-clean-300", help="dev-clean root: the 300 K-T0c test mixtures; only with --final"
+    )
+    ap.add_argument("--baseline", help="--final JSON of K-T0c: adds paired deltas on dev-clean 300")
     ap.add_argument("--out", help="write the result as JSON here")
     ap.add_argument("--device", default="cuda")
     a = ap.parse_args(argv)
-    if a.tests and not a.final:
+    if (a.tests or a.dev_clean_300) and not a.final:
         ap.error("test lists are read only with --final")
     if not a.final and not a.val_root:
         ap.error("--val-root is required without --final")
@@ -183,18 +238,24 @@ def main(argv=None):
     model = KezekTSE().to(a.device)
     model.load_state_dict(torch.load(a.checkpoint, map_location="cpu"))
     model.eval()
-    if not a.final:
-        sys.path.insert(0, os.path.dirname(__file__))
-        from kt1_data import ConversationDataset, build_index
+    sys.path.insert(0, os.path.dirname(__file__))
+    from kt1_data import ConversationDataset, build_index, sha256_file
 
+    res = {"checkpoint": a.checkpoint, "checkpoint_sha256": sha256_file(a.checkpoint)}
+    if not a.final:
         bank = DomainBank.from_dirs(a.rir_dirs, a.noise_dirs, a.music_dirs)
         val = ConversationDataset(build_index([a.val_root]), bank, a.n_val, seed=20_000)
-        res = {"validation": validate(model, se, val, a.device)}
+        res["validation"] = validate(model, se, val, a.device, ci=True)
     else:
-        res = {}
-        for name, items in json.load(open(a.tests)).items():
+        if a.dev_clean_300:
+            res["dev_clean_300"] = dc = dev_clean_300(model, se, a.dev_clean_300, a.device)
+            if a.baseline:
+                base = json.load(open(a.baseline))["dev_clean_300"]["per_mixture_sisdri"]
+                dc["vs_baseline"] = paired_delta(dc["per_mixture_sisdri"], base)
+        for name, items in (json.load(open(a.tests)) if a.tests else {}).items():
             sc, spk = zip(*(score_item(model, se, d, a.device) for d in items), strict=True)
             r = metrics.aggregate(list(sc))
+            r.update({f"{k}_ci": v for k, v in metrics.bootstrap_ci(list(sc)).items()})
             ws = metrics.wrong_speaker(
                 np.concatenate([s["cos_t"] for s in spk]) if spk else [],
                 np.concatenate([s["cos_o"] for s in spk]) if spk else [],
@@ -203,6 +264,7 @@ def main(argv=None):
             r.update(
                 {"wrong_speaker": ws[0], "speaker_windows": ws[1], "speaker_windows_skipped": ws[2]}
             )
+            r["items"] = list(items)
             res[name] = r
     print(json.dumps(res, indent=1))
     if a.out:

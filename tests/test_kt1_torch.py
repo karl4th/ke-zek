@@ -96,10 +96,22 @@ def test_watchdog():
     assert not ev.watchdog_tripped([(10000, 4.0), (15000, 2.0)])
 
 
+def test_paired_delta_is_tighter_than_two_intervals():
+    ev = _load("evaluate")
+    rng = np.random.default_rng(11)
+    base = rng.normal(12.8, 8.0, 300)  # mixtures differ a lot in difficulty
+    new = base - 0.3 + rng.normal(0, 0.5, 300)  # the model change is small and consistent
+    d = ev.paired_delta(new, base)
+    lo, hi = d["delta_ci"]
+    assert lo < -0.3 < hi and hi - lo < 0.2  # an unpaired comparison would be ~±0.9 dB wide
+
+
 def test_test_lists_need_final(tmp_path):
     ev = _load("evaluate")
     lst = str(tmp_path / "t.json")
     with pytest.raises(SystemExit):
         ev.parse(["--checkpoint", "x.pt", "--val-root", "v", "--tests", lst])
+    with pytest.raises(SystemExit):
+        ev.parse(["--checkpoint", "x.pt", "--val-root", "v", "--dev-clean-300", "dc"])
     a = ev.parse(["--checkpoint", "x.pt", "--final", "--tests", lst])
     assert a.final and a.tests

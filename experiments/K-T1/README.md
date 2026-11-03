@@ -31,6 +31,13 @@ python experiments/K-T1/evaluate.py --checkpoint run/kezek_tse.pt --val-root ...
 python experiments/K-T1/evaluate.py --checkpoint run/kezek_tse.pt --final --tests tests.json  # tests
 ```
 
+Diagnostic before the full run: `pod/diag.sh` trains the first 20k steps of the seed-0 run
+(`--stop-at`, same LR schedule), keeps a checkpoint every 2.5k and scores each one on the 300
+K-T0c dev-clean mixtures, paired with K-T0c (`--baseline`), plus the validation set.
+
+Every run writes `manifest.json`: commit, start checkpoint hash, and hashes of the speaker,
+utterance, RIR, noise and music lists. Evaluation reports 95% bootstrap intervals (`*_ci`).
+
 On a pod: `pod/setup.sh`, then `pod/run.sh` next to `experiments/K-T0/pod/guard.py`
 (`--keep-pod` keeps the pod after the final upload). `train.py` exits with code 3 when the
 target-solo level on validation is off by more than 3 dB twice in a row from step 10k;
