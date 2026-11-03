@@ -6,6 +6,7 @@
 # train-clean-100/360, MUSAN, RIRS_NOISES, DNS Freesound noise. Each archive is deleted after it is
 # extracted, so an 80 GB container disk is enough.
 set -x
+. /workspace/ke-zek/experiments/K-T0/pod/env.sh  # secrets live only in the container's first process
 mkdir -p /root/d/dl /root/d/extracted && cd /root/d || exit 1
 printf 'torch==2.4.1\ntorchaudio==2.4.1\nhuggingface_hub==0.25.2\nnumpy<2.1\n' > constraints.txt
 apt-get update -qq && apt-get install -y -qq aria2 libsndfile1 ffmpeg unzip > /dev/null
