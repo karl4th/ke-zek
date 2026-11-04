@@ -80,6 +80,17 @@ def stream_runs(y: np.ndarray, ref_db: float, rel_db: float = 35.0, merge: int =
     return [(int(a), int(b)) for a, b in e if b - a >= min_len]
 
 
+def split_run(a: int, b: int, max_len: int) -> list[tuple[int, int]]:
+    """A separator may hand one output to the other person at a turn change with no pause in
+    between, so a long run can hold two voices. Cut it into near-equal pieces of at most
+    ``max_len`` frames (0 = keep whole)."""
+    if max_len <= 0 or b - a <= max_len:
+        return [(a, b)]
+    k = -(-(b - a) // max_len)
+    edges = np.linspace(a, b, k + 1).round().astype(int)
+    return [(int(x), int(y)) for x, y in zip(edges[:-1], edges[1:], strict=True)]
+
+
 def two_means_threshold(scores: np.ndarray, weights: np.ndarray) -> float:
     """Midpoint between the two weighted 1-D clusters of run scores."""
     if len(scores) < 2:
@@ -113,6 +124,7 @@ def assign(
     min_target_cos: float = 0.35,
     gate_frames: int = 200,
     same_cos: float = 0.5,
+    max_run: int = 200,
     fade: int = 160,
     oracle: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, dict]:
@@ -123,7 +135,12 @@ def assign(
     target's anchored by the enrollment), and labels and centroids are re-estimated that many
     times. With 0, the cosine to the enrollment against a two-cluster threshold."""
     ref_db = float(np.percentile(frame_db(mix), 95))
-    runs = [(s, a, b) for s in (0, 1) for a, b in stream_runs(streams[s], ref_db, rel_db)]
+    runs = [
+        (s, a, b)
+        for s in (0, 1)
+        for a0, b0 in stream_runs(streams[s], ref_db, rel_db)
+        for a, b in split_run(a0, b0, max_run)
+    ]
     n = len(runs)
     if n == 0:
         return np.zeros_like(mix), {"runs": 0}
@@ -207,7 +224,8 @@ def assign(
     # terms (ECAPA cosine of runs >= 2 s: same person median 0.62, other person p95 0.26).
     # ``gated``: 0 two voices, 1 one voice = target, -1 one voice = the other person.
     gated = 0
-    long_runs = np.array([b - a >= gate_frames for _, a, b in runs]) & voiced
+    long_runs = np.array([b - a >= min(gate_frames, max_run or gate_frames) for _, a, b in runs])
+    long_runs &= voiced
     if min_target_cos > -1 and long_runs.any():
         lt, lo = long_runs & label, long_runs & ~label
 
