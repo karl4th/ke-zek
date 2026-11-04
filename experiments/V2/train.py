@@ -19,7 +19,7 @@ import soundfile as sf
 import torch
 
 from kezek.metrics import score_extraction
-from kezek.open_yap import scan_conversations, split_conversations
+from kezek.open_yap import check_speaker_disjoint, scan_conversations, split_conversations
 from kezek.open_yap_training import SAMPLE_RATE, OpenYapWindows
 from kezek.tse_v2 import TargetSpeakerExtractor
 from kezek.tse_v2_loss import extraction_loss
@@ -28,6 +28,11 @@ from kezek.tse_v2_loss import extraction_loss
 def parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument(
+        "--split-manifest",
+        type=Path,
+        help="Reuse the exact train/val/test conversation IDs from a previous run",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--stop-at", type=int, default=0, help="Profile a prefix, then resume")
@@ -88,6 +93,28 @@ def limited(pairs, maximum: int, seed: int):
     rng = np.random.default_rng(seed)
     indices = sorted(rng.choice(len(pairs), maximum, replace=False))
     return [pairs[int(i)] for i in indices]
+
+
+def select_splits(pairs, split_manifest: Path | None, seed: int):
+    if split_manifest is None:
+        return split_conversations(pairs, seed=seed)
+    previous = json.loads(split_manifest.read_text())["splits"]
+    by_id = {pair.conversation_id: pair for pair in pairs}
+    if len(by_id) != len(pairs):
+        raise ValueError("Duplicate conversation IDs in data root")
+    selected = []
+    used = set()
+    for name in ("train", "val", "test"):
+        ids = previous[name]
+        if not ids or len(ids) != len(set(ids)) or used.intersection(ids):
+            raise ValueError(f"Invalid {name} IDs in split manifest")
+        missing = set(ids) - by_id.keys()
+        if missing:
+            raise ValueError(f"Missing {name} conversations: {sorted(missing)[:3]}")
+        selected.append([by_id[conversation_id] for conversation_id in ids])
+        used.update(ids)
+    check_speaker_disjoint(*selected)
+    return tuple(selected)
 
 
 def init_tracker(args: argparse.Namespace, manifest: dict):
@@ -224,9 +251,10 @@ def main() -> None:
         raise RuntimeError("A paid run must use a clean, committed repository")
 
     pairs = scan_conversations(args.data_root)
-    train_pairs, val_pairs, test_pairs = split_conversations(pairs, seed=args.seed)
-    train_pairs = limited(train_pairs, args.max_train_conversations, args.seed)
-    val_pairs = limited(val_pairs, args.max_val_conversations, args.seed + 1)
+    train_pairs, val_pairs, test_pairs = select_splits(pairs, args.split_manifest, args.seed)
+    if args.split_manifest is None:
+        train_pairs = limited(train_pairs, args.max_train_conversations, args.seed)
+        val_pairs = limited(val_pairs, args.max_val_conversations, args.seed + 1)
     manifest = {
         "commit": commit,
         "dirty": dirty,
