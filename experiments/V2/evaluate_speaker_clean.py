@@ -37,12 +37,13 @@ def main() -> None:
     parser.add_argument("--enrollment-selection", choices=("ratio", "power"), default="ratio")
     parser.add_argument("--trim-silence", action="store_true")
     parser.add_argument("--examples", type=int, default=128)
+    parser.add_argument("--enrollment-seconds", type=float, default=6.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--run-name", default="v2-clean-speaker-matching")
     parser.add_argument("--no-tracker", action="store_true")
     args = parser.parse_args()
-    if args.examples < 1:
-        parser.error("Examples must be positive")
+    if args.examples < 1 or args.enrollment_seconds <= 0:
+        parser.error("Examples and enrollment duration must be positive")
     if not args.no_tracker and (
         not os.environ.get("AIRON_API_KEY") or not os.environ.get("AIRON_URL")
     ):
@@ -66,6 +67,7 @@ def main() -> None:
     dataset = OpenYapWindows(
         val_pairs, args.examples, seed=10_042,
         enrollment_selection=args.enrollment_selection,
+        enrollment_seconds=args.enrollment_seconds,
     )
     config = {
         "commit": commit,
@@ -74,6 +76,8 @@ def main() -> None:
         "enrollment_selection": args.enrollment_selection,
         "trim_silence": args.trim_silence,
         "examples": args.examples,
+        "enrollment_seconds": args.enrollment_seconds,
+        "val_eligible_conversations": len(dataset.pairs),
         "split_manifest": str(args.split_manifest),
     }
     tracker = None

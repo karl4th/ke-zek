@@ -55,6 +55,7 @@ def main() -> None:
     parser.add_argument("--split-manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--examples", type=int, default=128)
+    parser.add_argument("--enrollment-seconds", type=float, default=6.0)
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
     parser.add_argument("--speaker-repo", default=SPEAKER_REPO)
@@ -62,8 +63,8 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-tracker", action="store_true")
     args = parser.parse_args()
-    if args.examples < 1:
-        parser.error("Examples must be positive")
+    if args.examples < 1 or args.enrollment_seconds <= 0:
+        parser.error("Examples and enrollment duration must be positive")
     if not args.no_tracker and (
         not os.environ.get("AIRON_API_KEY") or not os.environ.get("AIRON_URL")
     ):
@@ -99,7 +100,10 @@ def main() -> None:
     )
     separator_rate = int(separator.hparams.sample_rate)
     _, val_pairs, _ = select_splits(scan_conversations(args.data_root), args.split_manifest, 42)
-    dataset = OpenYapWindows(val_pairs, args.examples, seed=10_042)
+    dataset = OpenYapWindows(
+        val_pairs, args.examples, seed=10_042,
+        enrollment_seconds=args.enrollment_seconds,
+    )
     commit, dirty = git_state()
     config = {
         "commit": commit,
@@ -112,6 +116,8 @@ def main() -> None:
         "speaker_revision": speaker_revision,
         "split_manifest": str(args.split_manifest),
         "examples": args.examples,
+        "enrollment_seconds": args.enrollment_seconds,
+        "val_eligible_conversations": len(dataset.pairs),
     }
     if dirty:
         raise RuntimeError("Evaluation must use a clean commit")
