@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from kezek.open_yap import ConversationPair, split_conversations
+from kezek.open_yap import ConversationPair, check_speaker_disjoint
 
 SR = 16_000
 FRAME = 160
@@ -46,9 +46,41 @@ def scan(root: str | Path) -> list[ConversationPair]:
     return pairs
 
 
-def splits(root: str | Path, seed: int = 42):
-    """Speaker-disjoint train / validation / test over connected identity groups."""
-    return split_conversations(scan(root), seed=seed)
+def splits(root: str | Path, seed: int = 42, fractions=(0.8, 0.1, 0.1)):
+    """Speaker-disjoint train / validation / test over connected identity groups.
+
+    Speakers recur across Open Yap conversations, so most conversations form one connected
+    group. That group always goes to train; the other groups are shuffled and fill validation
+    and test up to their share of conversations, the rest goes to train."""
+    pairs = scan(root)
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for p in pairs:
+        parent[find(p.speaker_a_id)] = find(p.speaker_b_id)
+    groups: dict[str, list[ConversationPair]] = {}
+    for p in pairs:
+        groups.setdefault(find(p.speaker_a_id), []).append(p)
+    comps = sorted(groups.values(), key=lambda g: (-len(g), g[0].conversation_id))
+    rest = comps[1:]
+    order = np.random.default_rng(seed).permutation(len(rest))
+    out: list[list[ConversationPair]] = [list(comps[0]), [], []]
+    target = [0, round(fractions[1] * len(pairs)), round(fractions[2] * len(pairs))]
+    for i in order:
+        g = rest[i]
+        need = [target[k] - len(out[k]) for k in (1, 2)]
+        k = 1 + int(np.argmax(need))
+        out[k if need[k - 1] >= len(g) / 2 else 0].extend(g)
+    for s in out:
+        s.sort(key=lambda p: p.conversation_id)
+    check_speaker_disjoint(*out)
+    return out[0], out[1], out[2]
 
 
 def split_ids(split) -> dict[str, list[str]]:
