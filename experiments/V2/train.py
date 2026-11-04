@@ -24,6 +24,7 @@ from kezek.open_yap import check_speaker_disjoint, scan_conversations, split_con
 from kezek.open_yap_training import SAMPLE_RATE, OpenYapWindows
 from kezek.tse_v2 import TargetSpeakerExtractor
 from kezek.tse_v2_loss import extraction_loss
+from kezek.tse_v2_unet import SpectralUNetExtractor
 
 
 def parse() -> argparse.Namespace:
@@ -66,6 +67,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--bands", type=int, default=8)
+    parser.add_argument("--architecture", choices=("band", "spectral_unet"), default="band")
     parser.add_argument("--conditioning", choices=("mean", "band_concat"), default="mean")
     parser.add_argument("--n-fft", type=int, default=512)
     parser.add_argument("--hop-length", type=int, default=128)
@@ -358,14 +360,15 @@ def main() -> None:
         args.enrollment_seconds,
         enrollment_selection=args.enrollment_selection,
     )
-    model = TargetSpeakerExtractor(
-        n_fft=args.n_fft,
-        hop_length=args.hop_length,
-        bands=args.bands,
-        width=args.width,
-        blocks=args.blocks,
-        conditioning=args.conditioning,
-    ).to(args.device)
+    model_config = {"n_fft": args.n_fft, "hop_length": args.hop_length}
+    if args.architecture == "band":
+        model_config.update(
+            bands=args.bands, width=args.width, blocks=args.blocks,
+            conditioning=args.conditioning,
+        )
+        model = TargetSpeakerExtractor(**model_config).to(args.device)
+    else:
+        model = SpectralUNetExtractor(**model_config).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
     warmup = min(100, max(1, args.steps // 20))
 
@@ -459,14 +462,8 @@ def main() -> None:
                 torch.save(
                     {
                         "model": model.state_dict(),
-                        "model_config": {
-                            "n_fft": args.n_fft,
-                            "hop_length": args.hop_length,
-                            "bands": args.bands,
-                            "width": args.width,
-                            "blocks": args.blocks,
-                            "conditioning": args.conditioning,
-                        },
+                        "architecture": args.architecture,
+                        "model_config": model_config,
                     },
                     model_path,
                 )

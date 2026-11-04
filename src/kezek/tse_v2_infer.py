@@ -11,6 +11,7 @@ import torch
 from scipy.signal import resample_poly
 
 from kezek.tse_v2 import TargetSpeakerExtractor
+from kezek.tse_v2_unet import SpectralUNetExtractor
 
 SAMPLE_RATE = 16_000
 
@@ -25,7 +26,7 @@ def _resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarr
 
 
 def extract_chunks(
-    model: TargetSpeakerExtractor,
+    model: TargetSpeakerExtractor | SpectralUNetExtractor,
     mixture: np.ndarray,
     enrollment: np.ndarray,
     device: str,
@@ -79,7 +80,13 @@ def extract_file(
     if mixture.ndim != 1 or enrollment.ndim != 1:
         raise ValueError("Both input files must be mono")
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    model = TargetSpeakerExtractor(**state["model_config"])
+    architecture = state.get("architecture", "band")
+    if architecture == "band":
+        model = TargetSpeakerExtractor(**state["model_config"])
+    elif architecture == "spectral_unet":
+        model = SpectralUNetExtractor(**state["model_config"])
+    else:
+        raise ValueError(f"Unknown checkpoint architecture: {architecture}")
     model.load_state_dict(state["model"])
     model.to(device)
     reduced = _resample(mixture, rate, SAMPLE_RATE)
