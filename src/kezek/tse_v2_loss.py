@@ -70,3 +70,28 @@ def extraction_loss(
         "activity_bce": float(activity_term.detach()),
     }
     return loss, parts
+
+
+def source_discriminative_loss(
+    estimate: torch.Tensor, target: torch.Tensor, other: torch.Tensor
+) -> tuple[torch.Tensor, int]:
+    """Prefer target similarity over other-speaker similarity on overlapping speech."""
+    if estimate.shape != target.shape or target.shape != other.shape:
+        raise ValueError("Estimate, target, and other must have matching shapes")
+    overlap = _activity(target) & _activity(other)
+    usable = overlap.sum(-1) >= 10
+    if not usable.any():
+        return estimate.new_zeros(()), 0
+    mask = _sample_mask(overlap[usable], estimate.shape[-1])
+    selected = estimate[usable] * mask
+    same = target[usable] * mask
+    different = other[usable] * mask
+    logits = torch.stack(
+        (
+            F.cosine_similarity(selected, same, dim=-1),
+            F.cosine_similarity(selected, different, dim=-1),
+        ),
+        dim=-1,
+    ) / 0.1
+    labels = torch.zeros(len(logits), dtype=torch.long, device=logits.device)
+    return F.cross_entropy(logits, labels), int(usable.sum())

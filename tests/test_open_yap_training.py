@@ -12,7 +12,7 @@ pytest.importorskip("scipy")
 from kezek.open_yap import scan_conversations  # noqa: E402
 from kezek.open_yap_training import OpenYapWindows, _separate_start  # noqa: E402
 from kezek.tse_v2 import TargetSpeakerExtractor  # noqa: E402
-from kezek.tse_v2_loss import extraction_loss  # noqa: E402
+from kezek.tse_v2_loss import extraction_loss, source_discriminative_loss  # noqa: E402
 
 
 def test_enrollment_never_overlaps_mixture():
@@ -112,3 +112,18 @@ def test_power_selection_prefers_stronger_clean_enrollment(tmp_path):
     ]
     assert all(value >= -1e-8 for value in improvements)
     assert any(value > 1e-4 for value in improvements)
+
+
+def test_discriminative_loss_prefers_target_on_overlap():
+    time = torch.arange(3200, dtype=torch.float32) / 16_000
+    target = (0.1 * torch.sin(2 * torch.pi * 220 * time))[None]
+    other = (0.1 * torch.sin(2 * torch.pi * 440 * time))[None]
+    correct, count = source_discriminative_loss(target, target, other)
+    wrong, _ = source_discriminative_loss(other, target, other)
+    assert count == 1
+    assert correct < wrong
+    estimate = (target + other).requires_grad_()
+    mixed, _ = source_discriminative_loss(estimate, target, other)
+    mixed.backward()
+    assert estimate.grad is not None
+    assert estimate.grad.abs().sum() > 0
