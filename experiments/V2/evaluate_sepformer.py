@@ -57,6 +57,7 @@ def main() -> None:
     parser.add_argument("--examples", type=int, default=128)
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
+    parser.add_argument("--speaker-repo", default=SPEAKER_REPO)
     parser.add_argument("--separator-checkpoint", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-tracker", action="store_true")
@@ -74,7 +75,7 @@ def main() -> None:
 
     api = HfApi()
     separator_revision = api.model_info(args.separator_repo).sha
-    speaker_revision = api.model_info(SPEAKER_REPO).sha
+    speaker_revision = api.model_info(args.speaker_repo).sha
     root = args.out.parent
     root.mkdir(parents=True, exist_ok=True)
     separator = SepformerSeparation.from_hparams(
@@ -92,8 +93,8 @@ def main() -> None:
         separator.mods.load_state_dict(state["model"])
         separator_revision = state["source_revision"]
     classifier = EncoderClassifier.from_hparams(
-        source=SPEAKER_REPO,
-        savedir=str(root / "pretrained" / "ecapa"),
+        source=args.speaker_repo,
+        savedir=str(root / "pretrained" / args.speaker_repo.replace("/", "_")),
         run_opts={"device": args.device},
     )
     separator_rate = int(separator.hparams.sample_rate)
@@ -107,7 +108,7 @@ def main() -> None:
         "separator_revision": separator_revision,
         "separator_rate": separator_rate,
         "checkpoint_sha256": checkpoint_sha256,
-        "speaker_encoder": SPEAKER_REPO,
+        "speaker_encoder": args.speaker_repo,
         "speaker_revision": speaker_revision,
         "split_manifest": str(args.split_manifest),
         "examples": args.examples,
