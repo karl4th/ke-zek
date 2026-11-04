@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -56,6 +57,7 @@ def main() -> None:
     parser.add_argument("--examples", type=int, default=128)
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
+    parser.add_argument("--separator-checkpoint", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-tracker", action="store_true")
     args = parser.parse_args()
@@ -80,6 +82,15 @@ def main() -> None:
         savedir=str(root / "pretrained" / args.separator_repo.replace("/", "_")),
         run_opts={"device": args.device},
     )
+    checkpoint_sha256 = None
+    if args.separator_checkpoint:
+        with args.separator_checkpoint.open("rb") as source:
+            checkpoint_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
+        state = torch.load(args.separator_checkpoint, map_location="cpu", weights_only=True)
+        if state["source_repo"] != args.separator_repo:
+            raise ValueError("Checkpoint separator repository does not match")
+        separator.mods.load_state_dict(state["model"])
+        separator_revision = state["source_revision"]
     classifier = EncoderClassifier.from_hparams(
         source=SPEAKER_REPO,
         savedir=str(root / "pretrained" / "ecapa"),
@@ -95,6 +106,7 @@ def main() -> None:
         "separator": args.separator_repo,
         "separator_revision": separator_revision,
         "separator_rate": separator_rate,
+        "checkpoint_sha256": checkpoint_sha256,
         "speaker_encoder": SPEAKER_REPO,
         "speaker_revision": speaker_revision,
         "split_manifest": str(args.split_manifest),

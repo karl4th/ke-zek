@@ -241,3 +241,58 @@ class CrossPairWindows(torch.utils.data.Dataset):
             cross_pair=True,
         )
         return first
+
+
+class OpenYapSeparationWindows(torch.utils.data.Dataset):
+    """Read aligned clean tracks for permutation-invariant two-speaker training."""
+
+    def __init__(
+        self,
+        pairs: list[ConversationPair],
+        count: int,
+        seed: int,
+        mixture_seconds: float = 4.0,
+        overlap_sampling: float = 0.0,
+    ) -> None:
+        if count < 1 or mixture_seconds <= 0 or not 0 <= overlap_sampling <= 1:
+            raise ValueError("Invalid separation window settings")
+        self.pairs = [
+            pair for pair in pairs if pair.frames >= round(mixture_seconds * pair.sample_rate)
+        ]
+        if not self.pairs:
+            raise ValueError("No conversations are long enough for separation windows")
+        self.count = count
+        self.seed = seed
+        self.mixture_seconds = mixture_seconds
+        self.overlap_sampling = overlap_sampling
+        self.overlap_centers = (
+            [_overlap_centers(pair) for pair in self.pairs] if overlap_sampling else []
+        )
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __getitem__(self, index: int) -> dict:
+        if index < 0 or index >= self.count:
+            raise IndexError(index)
+        rng = np.random.default_rng([self.seed, index])
+        pair_index = int(rng.integers(len(self.pairs)))
+        pair = self.pairs[pair_index]
+        crop_frames = round(self.mixture_seconds * pair.sample_rate)
+        start = int(rng.integers(pair.frames - crop_frames + 1))
+        if self.overlap_sampling and rng.random() < self.overlap_sampling:
+            centers = self.overlap_centers[pair_index]
+            if len(centers):
+                center = int(centers[int(rng.integers(len(centers)))])
+                offset = int(rng.integers(crop_frames))
+                start = max(0, min(pair.frames - crop_frames, center - offset))
+        first = _read_window(pair.speaker_a_path, start, crop_frames, pair.sample_rate)
+        second = _read_window(pair.speaker_b_path, start, crop_frames, pair.sample_rate)
+        mixture = first + second
+        gain = min(1.0, 0.95 / max(float(np.max(np.abs(mixture))), 1e-6))
+        return {
+            "mixture": torch.from_numpy((mixture * gain).copy()),
+            "first": torch.from_numpy((first * gain).copy()),
+            "second": torch.from_numpy((second * gain).copy()),
+            "conversation_id": pair.conversation_id,
+        }

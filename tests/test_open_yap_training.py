@@ -10,7 +10,12 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("scipy")
 
 from kezek.open_yap import scan_conversations  # noqa: E402
-from kezek.open_yap_training import CrossPairWindows, OpenYapWindows, _separate_start  # noqa: E402
+from kezek.open_yap_training import (  # noqa: E402
+    CrossPairWindows,
+    OpenYapSeparationWindows,
+    OpenYapWindows,
+    _separate_start,
+)
 from kezek.tse_v2 import TargetSpeakerExtractor  # noqa: E402
 from kezek.tse_v2_loss import (  # noqa: E402
     extraction_loss,
@@ -172,3 +177,19 @@ def test_mask_supervision_distinguishes_target_from_other():
     assert wrong > 0.9
     wrong.backward()
     assert model.band_outputs[0].weight.grad is not None
+
+
+def test_separation_windows_keep_both_clean_tracks(tmp_path):
+    rate = 16_000
+    directory = tmp_path / "conversations" / "conv_demo"
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text(
+        json.dumps({"conversation_id": "demo", "speaker_a_id": "a", "speaker_b_id": "b"})
+    )
+    time = np.arange(rate * 10) / rate
+    sf.write(directory / "speaker_a.wav", 0.1 * np.sin(2 * np.pi * 220 * time), rate)
+    sf.write(directory / "speaker_b.wav", 0.1 * np.sin(2 * np.pi * 330 * time), rate)
+    dataset = OpenYapSeparationWindows(scan_conversations(tmp_path), count=3, seed=5)
+    for sample in dataset:
+        assert sample["mixture"].shape == (4 * rate,)
+        torch.testing.assert_close(sample["mixture"], sample["first"] + sample["second"])
