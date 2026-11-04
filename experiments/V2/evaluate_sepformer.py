@@ -155,6 +155,8 @@ def main() -> None:
     scores: list[dict[str, float]] = []
     short_scores: list[float] = []
     selected_correct = []
+    voiced_selected_correct = []
+    overlap_selected_correct = []
     clean_selected_correct = []
     reverse_scores = []
     oracle_scores = []
@@ -215,6 +217,10 @@ def main() -> None:
                 ]
                 oracle = int(np.argmax([metric.sisdr for metric in source_metrics]))
                 selected_correct.append(float(selected == oracle))
+                if float(np.sqrt(np.mean(target**2))) >= 1e-3:
+                    voiced_selected_correct.append(float(selected == oracle))
+                    if source_metrics[oracle].overlap_s >= 0.1:
+                        overlap_selected_correct.append(float(selected == oracle))
                 if np.isfinite(source_metrics[oracle].sisdri_overlap):
                     oracle_scores.append(source_metrics[oracle].sisdri_overlap)
                 scores.append(source_metrics[selected].as_dict())
@@ -251,6 +257,16 @@ def main() -> None:
             summary["clean_speaker_assignment_accuracy"] = float(
                 np.mean(clean_selected_correct)
             )
+        if voiced_selected_correct:
+            summary["voiced_speaker_assignment_accuracy"] = float(
+                np.mean(voiced_selected_correct)
+            )
+            summary["voiced_speaker_assignment_examples"] = float(len(voiced_selected_correct))
+        if overlap_selected_correct:
+            summary["overlap_speaker_assignment_accuracy"] = float(
+                np.mean(overlap_selected_correct)
+            )
+            summary["overlap_speaker_assignment_examples"] = float(len(overlap_selected_correct))
         if short_scores:
             summary["short_overlap_turn_improvement_db"] = float(np.mean(short_scores))
             summary["short_overlap_turn_examples"] = float(len(short_scores))
