@@ -97,6 +97,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--samples", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--enrollment-selection", choices=("ratio", "power"), default="ratio")
     args = parser.parse_args()
     if args.samples < 1:
         parser.error("--samples must be positive")
@@ -108,7 +109,9 @@ def main() -> None:
         "splits": {},
     }
     for name, group, seed in (("train", train, args.seed), ("val", val, args.seed + 10_000)):
-        dataset = OpenYapWindows(group, args.samples, seed)
+        dataset = OpenYapWindows(
+            group, args.samples, seed, enrollment_selection=args.enrollment_selection
+        )
         examples = [inspect_sample(dataset[index]) for index in range(args.samples)]
         report["splits"][name] = {
             "summary": summarize(examples),
