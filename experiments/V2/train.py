@@ -136,7 +136,7 @@ def init_tracker(args: argparse.Namespace, manifest: dict):
     return airon.init(
         project="kezek",
         name=args.run_name,
-        experiment="K-V2",
+        experiment="K-V2 recipe search on Open Yap",
         config=tracker_config,
         tags=["v2", "open-yap", "tse"],
         total_steps=args.steps,

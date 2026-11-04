@@ -122,7 +122,7 @@ def main() -> None:
     run = airon.init(
         project="kezek",
         name=args.run_name,
-        experiment="K-V2 recipe search",
+        experiment="K-V2 recipe search on Open Yap",
         config=manifest,
         tags=["v2", "open-yap", "fixed-overfit"],
         total_steps=args.steps,
