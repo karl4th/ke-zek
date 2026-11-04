@@ -12,11 +12,11 @@ import soundfile as sf
 import torch
 import torch.nn.functional as F
 from scipy.signal import resample_poly
+from train import git_state, select_splits, short_overlap_turn_score
 
 from kezek.metrics import score_extraction
 from kezek.open_yap import scan_conversations
 from kezek.open_yap_training import OpenYapWindows
-from train import git_state, select_splits, short_overlap_turn_score
 
 SEPARATOR_REPO = "speechbrain/sepformer-wsj02mix"
 SPEAKER_REPO = "speechbrain/spkrec-ecapa-voxceleb"
