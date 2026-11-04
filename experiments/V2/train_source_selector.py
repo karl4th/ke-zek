@@ -115,16 +115,17 @@ def collect_features(
 
 def evaluate_selector(logits: torch.Tensor, rows: list[dict]) -> dict[str, float]:
     choices = (logits < 0).int().tolist()
-    correct = [float(choice == row["oracle"]) for choice, row in zip(choices, rows)]
+    correct = [float(choice == row["oracle"]) for choice, row in zip(choices, rows, strict=True)]
     overlap_correct = [
-        hit for hit, row in zip(correct, rows) if row["overlap_s"] >= 0.1
+        hit for hit, row in zip(correct, rows, strict=True) if row["overlap_s"] >= 0.1
     ]
     improvements = [
-        row["source_sisdri_overlap"][choice] for choice, row in zip(choices, rows)
+        row["source_sisdri_overlap"][choice]
+        for choice, row in zip(choices, rows, strict=True)
     ]
     shorts = [
         row["source_short_overlap_improvement_db"][choice]
-        for choice, row in zip(choices, rows)
+        for choice, row in zip(choices, rows, strict=True)
     ]
     metrics = {
         "assignment_accuracy": float(np.mean(correct)),
@@ -232,7 +233,7 @@ def main() -> None:
             weights = torch.zeros(train_x.shape[1], requires_grad=True)
             optimizer = torch.optim.LBFGS([weights], lr=0.5, max_iter=200)
 
-            def closure():
+            def closure(optimizer=optimizer, weights=weights, penalty=penalty):
                 optimizer.zero_grad()
                 logits = train_x @ weights
                 loss = F.binary_cross_entropy_with_logits(logits, train_y)
