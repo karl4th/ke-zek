@@ -10,9 +10,10 @@ from pathlib import Path
 import numpy as np
 
 from evaluate_sepformer import SPEAKER_REPO, _voice_score
+from train import git_state, select_splits
+
 from kezek.open_yap import scan_conversations
 from kezek.open_yap_training import OpenYapWindows
-from train import git_state, select_splits
 
 
 def trim_by_energy(audio: np.ndarray, sample_rate: int = 16_000) -> np.ndarray:
