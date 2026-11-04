@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 
 import numpy as np
-
 from evaluate_sepformer import SPEAKER_REPO, _voice_score
 from train import git_state, select_splits
 
