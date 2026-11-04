@@ -81,7 +81,7 @@ class OpenYapWindows(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return self.count
 
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, index: int) -> dict:
         if index < 0 or index >= self.count:
             raise IndexError(index)
         rng = np.random.default_rng([self.seed, index])
@@ -108,6 +108,7 @@ class OpenYapWindows(torch.utils.data.Dataset):
         other = _read_window(other_path, crop_start, crop_frames, rate)
         best_score = -float("inf")
         enrollment = None
+        enrollment_start = None
         for _ in range(self.enrollment_candidates):
             sample_start = _separate_start(
                 rng, pair.frames, crop_start, crop_frames, sample_frames, gap_frames
@@ -121,7 +122,8 @@ class OpenYapWindows(torch.utils.data.Dataset):
                 score = -1.0
             if score > best_score:
                 best_score, enrollment = score, candidate
-        assert enrollment is not None
+                enrollment_start = sample_start
+        assert enrollment is not None and enrollment_start is not None
 
         mixture = target + other
         gain = min(1.0, 0.95 / max(float(np.max(np.abs(mixture))), 1e-6))
@@ -131,4 +133,9 @@ class OpenYapWindows(torch.utils.data.Dataset):
             "enrollment": torch.from_numpy(enrollment.copy()),
             "target": torch.from_numpy(target.copy()),
             "other": torch.from_numpy(other.copy()),
+            "conversation_id": pair.conversation_id,
+            "conversation_dir": str(pair.speaker_a_path.parent),
+            "target_side": target_side,
+            "mixture_start_seconds": crop_start / rate,
+            "enrollment_start_seconds": enrollment_start / rate,
         }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -11,11 +12,28 @@ import numpy as np
 from kezek.metrics import regions, score_extraction
 from kezek.open_yap import scan_conversations, split_conversations
 from kezek.open_yap_training import SAMPLE_RATE, OpenYapWindows
-from kezek.vad import frames_to_samples
+from kezek.vad import FRAME_S, frames_to_samples
 
 
 def _rms(audio: np.ndarray) -> float:
     return float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+
+
+@lru_cache(maxsize=256)
+def _word_spans(path: Path) -> tuple[tuple[float, float], ...]:
+    words = json.loads(path.read_text())["words"]
+    return tuple((float(word["start"]), float(word["end"])) for word in words)
+
+
+def _word_activity(path: Path, start: float, seconds: float) -> np.ndarray:
+    frames = np.zeros(round(seconds / FRAME_S), dtype=bool)
+    for word_start, word_end in _word_spans(path):
+        if word_end <= start or word_start >= start + seconds:
+            continue
+        low = max(0, int(np.floor((word_start - start) / FRAME_S + 1e-6)))
+        high = min(len(frames), int(np.ceil((word_end - start) / FRAME_S - 1e-6)))
+        frames[low:high] = True
+    return frames
 
 
 def inspect_sample(sample: dict) -> dict[str, float]:
@@ -24,6 +42,13 @@ def inspect_sample(sample: dict) -> dict[str, float]:
     mixture = sample["mixture"].numpy()
     enrollment = sample["enrollment"].numpy()
     reg = regions(target, other, SAMPLE_RATE)
+    side = "ab"[sample["target_side"]]
+    transcript = Path(sample["conversation_dir"]) / f"speaker_{side}_transcript.json"
+    words = _word_activity(transcript, sample["mixture_start_seconds"], len(target) / SAMPLE_RATE)
+    enrollment_words = _word_activity(
+        transcript, sample["enrollment_start_seconds"], len(enrollment) / SAMPLE_RATE
+    )
+    vad_target = reg.overlap | reg.solo
     absent = frames_to_samples(reg.absent, SAMPLE_RATE, len(target))
     target_absent = float(np.mean(target[absent] ** 2)) if absent.any() else float("nan")
     other_absent = float(np.mean(other[absent] ** 2)) if absent.any() else float("nan")
@@ -32,6 +57,12 @@ def inspect_sample(sample: dict) -> dict[str, float]:
         "target_rms": _rms(target),
         "other_rms": _rms(other),
         "enrollment_rms": _rms(enrollment),
+        "enrollment_word_fraction": float(enrollment_words.mean()),
+        "target_word_fraction": float(words.mean()),
+        "target_vad_word_recall": float(vad_target[words].mean()) if words.any() else float("nan"),
+        "target_word_frames_marked_absent": float(reg.absent[words].mean())
+        if words.any()
+        else float("nan"),
         "target_active_fraction": float(reg.overlap.mean() + reg.solo.mean()),
         "other_active_fraction": float(reg.overlap.mean() + reg.absent.mean()),
         "overlap_fraction": float(reg.overlap.mean()),

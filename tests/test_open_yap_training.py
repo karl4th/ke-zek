@@ -40,6 +40,10 @@ def test_window_preserves_aligned_pair_and_resamples(tmp_path):
         assert item["mixture"].shape == (32_000,)
         assert item["enrollment"].shape == (48_000,)
         torch.testing.assert_close(item["mixture"], item["target"] + item["other"])
+        assert item["conversation_id"] == "demo"
+        assert item["conversation_dir"] == str(directory)
+        assert item["mixture_start_seconds"] >= 0
+        assert item["enrollment_start_seconds"] >= 0
     assert not torch.allclose(first["target"], second["target"], atol=1e-3)
 
 
