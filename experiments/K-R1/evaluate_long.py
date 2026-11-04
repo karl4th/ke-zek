@@ -25,7 +25,7 @@ import torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from block import assign, separate_long  # noqa: E402
-from models import Extractor, PretrainedSep, SepTasNet  # noqa: E402
+from models import BandSep, Extractor, PretrainedSep, SepTasNet  # noqa: E402
 from rdata import _Conversation, _runs, disputed_frames, splits  # noqa: E402
 
 from kezek import metrics  # noqa: E402
@@ -92,7 +92,7 @@ def main():
     elif a.method == "block" and a.model.startswith("speechbrain/"):
         model = PretrainedSep(a.model, dev).eval()
     elif a.method == "block":
-        model = SepTasNet().to(dev).eval()
+        model = (BandSep() if a.arch == "band" else SepTasNet()).to(dev).eval()
         model.load_state_dict(torch.load(a.model, map_location="cpu"))
     rng = np.random.default_rng(a.seed)
     scores, infos, used = [], [], 0

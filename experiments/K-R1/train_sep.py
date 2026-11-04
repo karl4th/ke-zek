@@ -25,7 +25,7 @@ import torch.nn.functional as F
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from models import SepTasNet  # noqa: E402
+from models import BandSep, SepTasNet  # noqa: E402
 from rdata import RealWindows, collate, split_ids, splits  # noqa: E402
 
 from kezek import metrics  # noqa: E402
@@ -94,6 +94,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--arch", choices=("tasnet", "band"), default="tasnet")
     ap.add_argument("--init", default="")
     ap.add_argument("--flip-init", action="store_true")
     ap.add_argument("--steps", type=int, default=30_000)
@@ -129,8 +130,9 @@ def main():
         "nat": RealWindows(val, a.n_val, seed=20_000, p_overlap=0.0, peak=(0.9, 0.9)),
         "ov": RealWindows(val, a.n_val, seed=30_000, p_overlap=1.0, peak=(0.9, 0.9)),
     }
-    model = SepTasNet().to(dev)
-    if a.init:
+    model = (SepTasNet() if a.arch == "tasnet" else BandSep()).to(dev)
+    print(f"{a.arch}: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters", flush=True)
+    if a.init and a.arch == "tasnet":
         model.net.load_state_dict(torch.load(a.init, map_location="cpu"))
         with torch.no_grad():
             if a.flip_init:
@@ -174,6 +176,9 @@ def main():
         if step % a.eval_every == 0 or step == last:
             run_eval(step)
             torch.save(model.state_dict(), f"{a.out}/sep.pt")
+            score = log[-1]["nat/overlap_sisdri"]
+            if np.isfinite(score) and score >= max(e["nat/overlap_sisdri"] for e in log):
+                torch.save(model.state_dict(), f"{a.out}/best.pt")
             torch.save({"step": step, "model": model.state_dict(), "opt": opt.state_dict(),
                         "sched": sched.state_dict(), "log": log}, f"{ckpt_path}.tmp")
             os.replace(f"{ckpt_path}.tmp", ckpt_path)

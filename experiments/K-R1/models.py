@@ -69,6 +69,47 @@ class SepTasNet(torch.nn.Module):
         return y.view(mix.shape[0], 2, -1)[..., :T]
 
 
+class BandSep(torch.nn.Module):
+    """Two-speaker band-split separator without an enrollment (the v2 band-split blocks, two
+    complex masks per band): mix [B, T] -> [B, 2, T]."""
+
+    def __init__(self, n_fft: int = 512, hop: int = 128, bands: int = 16, width: int = 128,
+                 blocks: int = 6):
+        super().__init__()
+        from kezek.tse_v2 import BandBlock
+
+        self.n_fft, self.hop = n_fft, hop
+        self.band_sizes = [len(p) for p in torch.tensor_split(torch.arange(n_fft // 2 + 1), bands)]
+        self.inp = torch.nn.ModuleList(
+            torch.nn.Sequential(torch.nn.LayerNorm(2 * k), torch.nn.Linear(2 * k, width))
+            for k in self.band_sizes
+        )
+        self.blocks = torch.nn.ModuleList(BandBlock(width) for _ in range(blocks))
+        self.out = torch.nn.ModuleList(torch.nn.Linear(width, 4 * k) for k in self.band_sizes)
+        self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
+
+    def forward(self, mix: torch.Tensor) -> torch.Tensor:
+        dtype = mix.dtype
+        mix = mix.float()
+        spec = torch.stft(mix, self.n_fft, self.hop, window=self.window, return_complex=True)
+        feats = []
+        for chunk, proj in zip(torch.split(spec, self.band_sizes, dim=1), self.inp, strict=True):
+            feats.append(proj(torch.view_as_real(chunk).permute(0, 2, 1, 3).flatten(2)))
+        h = torch.stack(feats, dim=1)
+        for blk in self.blocks:
+            h = blk(h)
+        outs = []
+        for feat, chunk, head in zip(h.unbind(1), torch.split(spec, self.band_sizes, dim=1),
+                                     self.out, strict=True):
+            m = head(feat).float().view(feat.shape[0], feat.shape[1], 2, 2, -1)  # B F src re/im k
+            mask = torch.complex(m[:, :, :, 0], m[:, :, :, 1]).permute(0, 2, 3, 1)  # B src k F
+            outs.append(chunk.unsqueeze(1) * mask)
+        est = torch.cat(outs, dim=2)
+        y = torch.istft(est.flatten(0, 1), self.n_fft, self.hop, window=self.window,
+                        length=mix.shape[-1])
+        return y.view(mix.shape[0], 2, -1).to(dtype)
+
+
 class PretrainedSep(torch.nn.Module):
     """A public SpeechBrain separator as the block's first stage: mix [B, T] -> [B, 2, T].
     8 kHz models get a resampled input and their output resampled back to 16 kHz."""
