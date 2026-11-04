@@ -129,6 +129,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--amp", action="store_true", help="bf16 autocast for the extractor forward")
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
@@ -223,13 +224,17 @@ def main():
         enr = b["enr_t"].to(dev, non_blocking=True)
         with torch.no_grad():
             d = se(enr)
-        est = model(mix, enr, d)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.amp):
+            est = model(mix, enr, d)
+        est = est.float()
         loss, parts = objective(est, clean, b["act_t"], b["silent"], b["l_ref"], d)
         if a.dual:
             enr_o = b["enr_o"].to(dev, non_blocking=True)
             with torch.no_grad():
                 d_o = se(enr_o)
-            est_o = model(mix, enr_o, d_o)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.amp):
+                est_o = model(mix, enr_o, d_o)
+            est_o = est_o.float()
             other = b["other"].to(dev)
             loss_o, _ = objective(est_o, other, b["act_o"], b["silent_o"], b["l_ref_o"], d_o)
             full = torch.ones_like(mix)
