@@ -50,9 +50,11 @@ def sisdr_only(est, clean, act_t):
 
 
 def masked_sisdr(est, ref, w, eps: float = 1e-8):
-    """SI-SDR in dB of est against ref over the samples where w = 1. [B]"""
+    """SI-SDR in dB of est against ref over the samples where w = 1, with a nonnegative
+    scale. [B]"""
     e, r = est * w, ref * w
     alpha = (e * r).sum(-1, keepdim=True) / ((r * r).sum(-1, keepdim=True) + eps)
+    alpha = alpha.clamp_min(0.0)  # an inverted output is an error, not a perfect estimate
     proj = alpha * r
     return 10 * torch.log10((proj**2).sum(-1) / (((e - proj) ** 2).sum(-1) + eps) + eps)
 
@@ -102,6 +104,12 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--arch", choices=ARCHS, default="kezek")
     ap.add_argument("--init", default="", help="state dict of the network; empty = random init")
+    ap.add_argument(
+        "--flip-init",
+        action="store_true",
+        help="negate the KezekTSE decoder after loading: K-T0c outputs the target with inverted "
+        "polarity (SI-SDR training cannot see the sign)",
+    )
     ap.add_argument("--loss", choices=("state", "kt1", "sisdr"), default="state")
     ap.add_argument("--level-weight", type=float, default=0.5)
     ap.add_argument("--silence-weight", type=float, default=0.3)
@@ -178,6 +186,9 @@ def main():
     model = Extractor(a.arch).to(dev)
     if a.init:
         model.net.load_state_dict(torch.load(a.init, map_location="cpu"))
+        if a.flip_init:
+            with torch.no_grad():
+                model.net.dec.weight.neg_()
     print(f"{a.arch}: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_lambda(s, a.warmup, a.steps))

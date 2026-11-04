@@ -30,10 +30,11 @@ evaluate mixture mixture
 evaluate kt0c "$init/kezek-k-t0c/kezek_tse.pt"
 evaluate kt1 "$init/kezek-k-t1/kezek_tse.pt"
 
-train r1_kt0c_state --init "$init/kezek-k-t0c/kezek_tse.pt" --lr 1e-4
-train r5_kt0c_state_dual --init "$init/kezek-k-t0c/kezek_tse.pt" --lr 1e-4 --dual 0.3
-train r2_scratch_state --lr 1e-3 --warmup 2000
-train r3_band_state --arch band --lr 5e-4 --warmup 2000
-train r4_kt1_state --init "$init/kezek-k-t1/kezek_tse.pt" --lr 1e-4
-train r6_kt0c_kt1loss --init "$init/kezek-k-t0c/kezek_tse.pt" --lr 1e-4 --loss kt1 --stop-at 5000
+kt0c=(--init "$init/kezek-k-t0c/kezek_tse.pt" --flip-init)
+train r1_kt0c_state "${kt0c[@]}" --lr 1e-4 --amp
+train r5_kt0c_state_dual "${kt0c[@]}" --lr 1e-4 --dual 0.3 --amp
+train r2_scratch_state --lr 1e-3 --warmup 2000 --amp
+train r3_band_state --arch band --lr 5e-4 --warmup 2000 --amp
+train r4_kt1_state --init "$init/kezek-k-t1/kezek_tse.pt" --lr 1e-4 --amp
+train r6_kt0c_kt1loss "${kt0c[@]}" --lr 1e-4 --loss kt1 --stop-at 5000 --amp
 echo "QUEUE DONE"
