@@ -17,6 +17,7 @@ from evaluate_sepformer import (
     _fit_length,
     _resample,
     _speaker_embedding,
+    feature_vector,
     trim_by_energy,
 )
 from train import git_state, select_splits, short_overlap_turn_score
@@ -24,21 +25,6 @@ from train import git_state, select_splits, short_overlap_turn_score
 from kezek.metrics import score_extraction
 from kezek.open_yap import scan_conversations
 from kezek.open_yap_training import OpenYapWindows
-
-
-def feature_vector(enrollment: torch.Tensor, first: torch.Tensor, second: torch.Tensor,
-                   first_rms: float, second_rms: float) -> torch.Tensor:
-    """Signed pair features: swapping the sources reverses their sign."""
-    enrollment, first, second = (F.normalize(value.float(), dim=0)
-                                 for value in (enrollment, first, second))
-    difference = first - second
-    cosine_difference = torch.dot(enrollment, difference)
-    energy_difference = np.log(max(first_rms, 1e-6) / max(second_rms, 1e-6))
-    return torch.cat((
-        enrollment * difference,
-        cosine_difference[None],
-        difference.new_tensor([energy_difference]),
-    )).cpu()
 
 
 def collect_features(

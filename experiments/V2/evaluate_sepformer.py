@@ -66,6 +66,24 @@ def _embedding_score(first: torch.Tensor | None, second: torch.Tensor | None) ->
     return float(F.cosine_similarity(first, second, dim=0))
 
 
+def feature_vector(
+    enrollment: torch.Tensor, first: torch.Tensor, second: torch.Tensor,
+    first_rms: float, second_rms: float,
+) -> torch.Tensor:
+    """Signed pair features: swapping the sources reverses their sign."""
+    enrollment, first, second = (
+        F.normalize(value.float(), dim=0) for value in (enrollment, first, second)
+    )
+    difference = first - second
+    cosine_difference = torch.dot(enrollment, difference)
+    energy_difference = np.log(max(first_rms, 1e-6) / max(second_rms, 1e-6))
+    return torch.cat((
+        enrollment * difference,
+        cosine_difference[None],
+        difference.new_tensor([energy_difference]),
+    )).cpu()
+
+
 def _voice_score(classifier, enrollment: np.ndarray, source: np.ndarray, device: str) -> float:
     return _embedding_score(
         _speaker_embedding(classifier, enrollment, device),
@@ -92,6 +110,35 @@ def _windowed_voice_score(
     )
 
 
+def _select_source(
+    classifier, enrollment: np.ndarray, matching_sources: list[np.ndarray],
+    sources: list[np.ndarray], device: str, speaker_window_seconds: float,
+    selector_state: dict | None,
+) -> int:
+    def baseline() -> int:
+        return int(np.argmax([
+            _windowed_voice_score(
+                classifier, enrollment, source, device, speaker_window_seconds,
+            )
+            for source in matching_sources
+        ]))
+
+    if selector_state is None or selector_state["method"] == "cosine":
+        return baseline()
+    voice = _speaker_embedding(classifier, enrollment, device)
+    source_embeddings = [
+        _speaker_embedding(classifier, source, device) for source in matching_sources
+    ]
+    if voice is None or any(item is None for item in source_embeddings):
+        return baseline()
+    first, second = source_embeddings
+    assert first is not None and second is not None
+    rms = [float(np.sqrt(np.mean(source**2))) for source in sources]
+    features = feature_vector(voice, first, second, *rms)
+    score = torch.dot(features / selector_state["scale"], selector_state["weights"])
+    return int(score < 0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
@@ -106,6 +153,8 @@ def main() -> None:
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
     parser.add_argument("--speaker-repo", default=SPEAKER_REPO)
     parser.add_argument("--separator-checkpoint", type=Path)
+    parser.add_argument("--selector-checkpoint", type=Path)
+    parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-tracker", action="store_true")
     args = parser.parse_args()
@@ -113,6 +162,8 @@ def main() -> None:
         parser.error("Examples and window durations must be positive")
     if args.speaker_window_seconds < 0:
         parser.error("Speaker window duration cannot be negative")
+    if args.selector_checkpoint and args.speaker_window_seconds:
+        parser.error("A learned selector cannot use windowed speaker scoring")
     if not args.no_tracker and (
         not os.environ.get("AIRON_API_KEY") or not os.environ.get("AIRON_URL")
     ):
@@ -144,15 +195,29 @@ def main() -> None:
             raise ValueError("Checkpoint separator repository does not match")
         separator.mods.load_state_dict(state["model"])
         separator_revision = state["source_revision"]
+    selector_state = None
+    selector_sha256 = None
+    if args.selector_checkpoint:
+        checksum = hashlib.sha256()
+        with args.selector_checkpoint.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                checksum.update(chunk)
+        selector_sha256 = checksum.hexdigest()
+        selector_state = torch.load(args.selector_checkpoint, map_location="cpu", weights_only=True)
+        if selector_state["config"]["separator_checkpoint_sha256"] != checkpoint_sha256:
+            raise ValueError("Selector was trained for another separator checkpoint")
     classifier = EncoderClassifier.from_hparams(
         source=args.speaker_repo,
         savedir=str(root / "pretrained" / args.speaker_repo.replace("/", "_")),
         run_opts={"device": args.device},
     )
     separator_rate = int(separator.hparams.sample_rate)
-    _, val_pairs, _ = select_splits(scan_conversations(args.data_root), args.split_manifest, 42)
+    _, val_pairs, test_pairs = select_splits(
+        scan_conversations(args.data_root), args.split_manifest, 42
+    )
+    selected_pairs = val_pairs if args.split == "val" else test_pairs
     dataset = OpenYapWindows(
-        val_pairs, args.examples, seed=10_042,
+        selected_pairs, args.examples, seed=10_042 if args.split == "val" else 20_042,
         mixture_seconds=args.mixture_seconds,
         enrollment_seconds=args.enrollment_seconds,
     )
@@ -164,9 +229,12 @@ def main() -> None:
         "separator_revision": separator_revision,
         "separator_rate": separator_rate,
         "checkpoint_sha256": checkpoint_sha256,
+        "selector_checkpoint_sha256": selector_sha256,
+        "selector_method": selector_state["method"] if selector_state else "cosine",
         "speaker_encoder": args.speaker_repo,
         "speaker_revision": speaker_revision,
         "split_manifest": str(args.split_manifest),
+        "split": args.split,
         "examples": args.examples,
         "mixture_seconds": args.mixture_seconds,
         "enrollment_seconds": args.enrollment_seconds,
@@ -240,18 +308,18 @@ def main() -> None:
                     )
                     for source in matching_sources
                 ]
-                selected = int(np.argmax(scores_by_source))
+                selected = _select_source(
+                    classifier, enrollment, matching_sources, sources, args.device,
+                    args.speaker_window_seconds, selector_state,
+                )
                 estimate = sources[selected]
                 opposite_enrollment = sample["other_enrollment"].numpy()
                 if args.trim_silence:
                     opposite_enrollment = trim_by_energy(opposite_enrollment)
-                reverse_selected = int(np.argmax([
-                    _windowed_voice_score(
-                        classifier, opposite_enrollment, source, args.device,
-                        args.speaker_window_seconds,
-                    )
-                    for source in matching_sources
-                ]))
+                reverse_selected = _select_source(
+                    classifier, opposite_enrollment, matching_sources, sources, args.device,
+                    args.speaker_window_seconds, selector_state,
+                )
                 reverse = sources[reverse_selected]
                 source_metrics = [
                     score_extraction(source, target, other, 16_000) for source in sources
