@@ -126,3 +126,24 @@ def test_speaker_contrastive_loss_trains_voice_profile():
     loss.backward()
     assert model.profile[1].weight.grad is not None
     assert model.profile[1].weight.grad.abs().sum() > 0
+
+
+def test_new_run_can_initialize_from_matching_model_checkpoint(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "experiments" / "V2" / "train.py"
+    spec = importlib.util.spec_from_file_location("v2_train", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    config = {"n_fft": 64, "hop_length": 16, "bands": 4, "width": 8, "blocks": 1}
+    source = TargetSpeakerExtractor(**config)
+    checkpoint = tmp_path / "model.pt"
+    torch.save(
+        {"architecture": "band", "model_config": config, "model": source.state_dict()},
+        checkpoint,
+    )
+    loaded = TargetSpeakerExtractor(**config)
+    module.load_initial_model(loaded, checkpoint, "band", config)
+    for expected, actual in zip(source.parameters(), loaded.parameters(), strict=True):
+        torch.testing.assert_close(expected, actual)
+    with pytest.raises(ValueError, match="do not match"):
+        module.load_initial_model(loaded, checkpoint, "spectral_unet", config)

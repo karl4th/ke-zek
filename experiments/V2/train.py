@@ -80,6 +80,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--run-name", default="kezek-v2-open-yap")
     parser.add_argument("--hf-repo", help="Existing private model repository for checkpoints")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--init-model", type=Path, help="Initialize a new run from model.pt")
     parser.add_argument("--require-clean", action="store_true")
     parser.add_argument("--no-tracker", action="store_true", help="Local smoke checks only")
     args = parser.parse_args()
@@ -89,6 +90,8 @@ def parse() -> argparse.Namespace:
         parser.error("Workers must be nonnegative")
     if args.stop_at < 0 or args.stop_at > args.steps:
         parser.error("Stop step must be between zero and total steps")
+    if args.resume and args.init_model:
+        parser.error("--resume and --init-model cannot be combined")
     if not 0 <= args.overlap_sampling <= 1:
         parser.error("Overlap sampling must be between zero and one")
     if not 0 <= args.cross_pair_probability <= 1:
@@ -107,6 +110,13 @@ def git_state() -> tuple[str, bool]:
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root))
     return commit, dirty
+
+
+def load_initial_model(model, path: Path, architecture: str, model_config: dict) -> None:
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if state.get("architecture", "band") != architecture or state["model_config"] != model_config:
+        raise ValueError("Initial model architecture or settings do not match")
+    model.load_state_dict(state["model"])
 
 
 def limited(pairs, maximum: int, seed: int):
@@ -368,6 +378,9 @@ def main() -> None:
             for name, group in (("train", train_pairs), ("val", val_pairs), ("test", test_pairs))
         },
     }
+    if args.init_model:
+        with args.init_model.open("rb") as source:
+            manifest["initial_model_sha256"] = hashlib.file_digest(source, "sha256").hexdigest()
     manifest_path = args.out / "manifest.json"
     if args.resume:
         previous = json.loads(manifest_path.read_text())
@@ -407,6 +420,8 @@ def main() -> None:
         model = TargetSpeakerExtractor(**model_config).to(args.device)
     else:
         model = SpectralUNetExtractor(**model_config).to(args.device)
+    if args.init_model:
+        load_initial_model(model, args.init_model, args.architecture, model_config)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
     warmup = min(100, max(1, args.steps // 20))
 
