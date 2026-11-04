@@ -164,6 +164,8 @@ def main() -> None:
         parser.error("Speaker window duration cannot be negative")
     if args.selector_checkpoint and args.speaker_window_seconds:
         parser.error("A learned selector cannot use windowed speaker scoring")
+    if args.selector_checkpoint and not args.trim_silence:
+        parser.error("A learned selector requires energy-trimmed speaker audio")
     if not args.no_tracker and (
         not os.environ.get("AIRON_API_KEY") or not os.environ.get("AIRON_URL")
     ):
@@ -211,6 +213,12 @@ def main() -> None:
         savedir=str(root / "pretrained" / args.speaker_repo.replace("/", "_")),
         run_opts={"device": args.device},
     )
+    if selector_state and selector_state["config"]["speaker_revision"] != speaker_revision:
+        raise ValueError("Selector was trained for another speaker encoder revision")
+    if selector_state and (
+        selector_state["config"]["enrollment_seconds"] != args.enrollment_seconds
+    ):
+        raise ValueError("Selector was trained for another enrollment duration")
     separator_rate = int(separator.hparams.sample_rate)
     _, val_pairs, test_pairs = select_splits(
         scan_conversations(args.data_root), args.split_manifest, 42
