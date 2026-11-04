@@ -60,7 +60,7 @@ def mono_long(model, mix, enr, d, device, win_s=4.0, hop_s=3.0, batch=16):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
-    ap.add_argument("--method", choices=("mixture", "mono", "block"), required=True)
+    ap.add_argument("--method", choices=("mixture", "mono", "block", "oracle_block"), required=True)
     ap.add_argument("--model", default="")
     ap.add_argument("--arch", default="kezek")
     ap.add_argument("--no-conversation", action="store_true", help="block: voice evidence only")
@@ -129,7 +129,10 @@ def main():
             elif a.method == "mono":
                 est = mono_long(model, mix, enr, d, dev)
             else:
-                streams = separate_long(model, mix, dev)
+                if a.method == "oracle_block":  # the clean tracks stand in for the separator
+                    streams = np.stack([t, o]) if rng.random() < 0.5 else np.stack([o, t])
+                else:
+                    streams = separate_long(model, mix, dev)
                 est, info = assign(streams, mix, d, se, dev, use_conversation=not a.no_conversation)
             m = np.repeat(at, FRAME)
             l_ref = float(np.mean(np.float64(t[m]) ** 2)) if m.any() else float(np.mean(t**2)) + 1e-12
