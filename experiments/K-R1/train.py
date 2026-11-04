@@ -28,7 +28,7 @@ from models import ARCHS, Extractor  # noqa: E402
 from rdata import RealWindows, collate, split_ids, splits  # noqa: E402
 from validate import validate  # noqa: E402
 
-from kezek.losses import kt1_loss  # noqa: E402
+from kezek.losses import kt1_loss, snr_tau  # noqa: E402
 from kezek.model import SpeakerEncoder, si_sdr_loss  # noqa: E402
 
 
@@ -65,6 +65,14 @@ def main():
     ap.add_argument("--init", default="", help="state dict of the network; empty = random init")
     ap.add_argument("--loss", choices=("kt1", "sisdr"), default="kt1")
     ap.add_argument("--spk-weight", type=float, default=0.1)
+    ap.add_argument(
+        "--dual",
+        type=float,
+        default=0.0,
+        help="weight of the two-pass term: also extract the other speaker with their own "
+        "enrollment, train that pass with the same loss, and ask the two outputs to sum to the "
+        "mixture (0 = single pass)",
+    )
     ap.add_argument("--steps", type=int, default=40_000)
     ap.add_argument("--stop-at", type=int, default=0)
     ap.add_argument("--bs", type=int, default=8)
@@ -172,6 +180,23 @@ def main():
             )
         else:
             loss, parts = sisdr_only(est, clean, b["act_t"].to(dev))
+        if a.dual:
+            enr_o = b["enr_o"].to(dev, non_blocking=True)
+            with torch.no_grad():
+                d_o = se(enr_o)
+            est_o = model(mix, enr_o, d_o)
+            other = b["other"].to(dev)
+            if a.loss == "kt1":
+                loss_o, _ = kt1_loss(
+                    est_o, other, b["act_o"].to(dev), b["silent_o"].to(dev),
+                    b["l_ref_o"].to(dev), d_o, se, weights=(1.0, 0.3, a.spk_weight),
+                )
+            else:
+                loss_o, _ = sisdr_only(est_o, other, b["act_o"].to(dev))
+            full = torch.ones_like(mix)
+            consistency = -snr_tau(est + est_o, mix, full).mean()
+            loss = 0.5 * (loss + loss_o) + a.dual * consistency
+            parts["sum_snr"] = -float(consistency.detach())
         if not torch.isfinite(loss):
             print(f"step {step}: non-finite loss, batch skipped", flush=True)
             opt.zero_grad(set_to_none=True)

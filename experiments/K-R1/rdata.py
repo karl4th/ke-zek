@@ -146,6 +146,19 @@ class RealWindows(torch.utils.data.Dataset):
         enr = np.concatenate([c.audio(0, a, b) + c.audio(1, a, b) for a, b in pieces])
         return enr, got
 
+    @staticmethod
+    def _level(c: _Conversation, side: int, x: np.ndarray, act: np.ndarray, g: float, rng) -> float:
+        """L_ref: energy of the clean track on its active frames in the window; if it is nearly
+        silent here, on a stretch of its own solo speech elsewhere (same gain)."""
+        m = np.repeat(act, FRAME)
+        if m.sum() >= 50 * FRAME:
+            return float(np.mean(np.float64(x[m]) ** 2))
+        r = c.solo[side]
+        if not len(r):
+            return float(np.mean(np.float64(x) ** 2)) + 1e-8
+        a, b = (int(v) for v in r[int(rng.integers(len(r)))])
+        return float(np.mean(np.float64(c.audio(side, a, b) * g) ** 2)) + 1e-12
+
     def item(self, i: int, tries: int = 20) -> dict:
         rng = np.random.default_rng([self.seed, i])
         for _ in range(tries):
@@ -173,13 +186,8 @@ class RealWindows(torch.utils.data.Dataset):
             mix = t + o
             g = rng.uniform(*self.peak) / max(float(np.abs(mix).max()), 1e-4)
             t, o, mix = t * g, o * g, mix * g
-            m = np.repeat(act_t, FRAME)
-            if m.sum() >= 50 * FRAME:
-                l_ref = float(np.mean(np.float64(t[m]) ** 2))
-            else:  # target nearly silent here: its level on its own solo speech elsewhere
-                r = c.solo[side]
-                a, b = (int(x) for x in r[int(rng.integers(len(r)))])
-                l_ref = float(np.mean(np.float64(c.audio(side, a, b) * g) ** 2))
+            l_ref = self._level(c, side, t, act_t, g, rng)
+            l_ref_o = self._level(c, 1 - side, o, act_o, g, rng)
             enr = enr * np.float32(0.9 / max(float(np.abs(enr).max()), 1e-4))
             # the other speaker's enrollment, for the wrong-speaker check in validation
             try:
@@ -199,6 +207,8 @@ class RealWindows(torch.utils.data.Dataset):
                 "disputed": disputed,
                 "silent": ~act_t & ~disputed,
                 "l_ref": np.float32(l_ref),
+                "l_ref_o": np.float32(l_ref_o),
+                "silent_o": ~act_o & ~disputed,
                 "enr_t": enr.astype(np.float32),
                 "enr_o": enr_o.astype(np.float32),
                 "clean_window": True,
