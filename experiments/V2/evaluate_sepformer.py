@@ -115,6 +115,7 @@ def main() -> None:
     scores: list[dict[str, float]] = []
     short_scores: list[float] = []
     selected_correct = []
+    clean_selected_correct = []
     reverse_scores = []
     oracle_scores = []
     deltas = []
@@ -142,6 +143,12 @@ def main() -> None:
                 )
                 sources = [source * gain for source in sources]
                 enrollment = sample["enrollment"].numpy()
+                if float(np.sqrt(np.mean(target**2))) >= 1e-3:
+                    clean_scores = [
+                        _voice_score(classifier, enrollment, clean_source, args.device)
+                        for clean_source in (target, other)
+                    ]
+                    clean_selected_correct.append(float(clean_scores[0] > clean_scores[1]))
                 scores_by_source = [
                     _voice_score(classifier, enrollment, source, args.device) for source in sources
                 ]
@@ -185,10 +192,15 @@ def main() -> None:
         }
         summary.update(
             speaker_assignment_accuracy=float(np.mean(selected_correct)),
+            clean_speaker_assignment_examples=float(len(clean_selected_correct)),
             oracle_sisdri_overlap=float(np.mean(oracle_scores)),
             reverse_sisdri_overlap=float(np.mean(reverse_scores)),
             enrollment_delta_ratio=float(np.mean(deltas)),
         )
+        if clean_selected_correct:
+            summary["clean_speaker_assignment_accuracy"] = float(
+                np.mean(clean_selected_correct)
+            )
         if short_scores:
             summary["short_overlap_turn_improvement_db"] = float(np.mean(short_scores))
             summary["short_overlap_turn_examples"] = float(len(short_scores))
