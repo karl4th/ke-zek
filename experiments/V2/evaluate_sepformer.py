@@ -184,6 +184,7 @@ def main() -> None:
     reverse_scores = []
     oracle_scores = []
     deltas = []
+    rows = []
     demo = root / f"{args.run_name}-audio"
     demo.mkdir(exist_ok=True)
     try:
@@ -261,6 +262,20 @@ def main() -> None:
                 short = short_overlap_turn_score(sample, estimate, target, other)
                 if short is not None:
                     short_scores.append(short[0])
+                overlap_improvement = source_metrics[selected].sisdri_overlap
+                rows.append({
+                    "conversation_id": sample["conversation_id"],
+                    "target_side": sample["target_side"],
+                    "target_voiced": bool(float(np.sqrt(np.mean(target**2))) >= 1e-3),
+                    "overlap_s": source_metrics[selected].overlap_s,
+                    "speaker_selected_correct": bool(selected == oracle),
+                    "speaker_score_margin": float(abs(scores_by_source[0] - scores_by_source[1])),
+                    "sisdri_overlap": (
+                        float(overlap_improvement)
+                        if np.isfinite(overlap_improvement) else None
+                    ),
+                    "short_overlap_turn_improvement_db": short[0] if short else None,
+                })
                 if index < 4:
                     for name, audio in (
                         ("mixture", mixture),
@@ -299,7 +314,7 @@ def main() -> None:
         if short_scores:
             summary["short_overlap_turn_improvement_db"] = float(np.mean(short_scores))
             summary["short_overlap_turn_examples"] = float(len(short_scores))
-        args.out.write_text(json.dumps({"config": config, "metrics": summary}, indent=2))
+        args.out.write_text(json.dumps({"config": config, "metrics": summary, "rows": rows}, indent=2))
         print(json.dumps(summary, sort_keys=True), flush=True)
         if tracker is not None:
             tracker.log({f"val/{key}": value for key, value in summary.items()}, step=0)
