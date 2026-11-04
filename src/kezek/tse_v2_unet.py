@@ -58,6 +58,19 @@ class SpectralUNetExtractor(nn.Module):
         nn.init.zeros_(self.mask.weight)
         nn.init.zeros_(self.mask.bias)
 
+    def encode_voice(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if audio.ndim != 2 or audio.shape[-1] < self.n_fft:
+            raise ValueError("Voice audio must have shape [batch, samples] and one STFT window")
+        spectrum = torch.stft(
+            audio,
+            self.n_fft,
+            self.hop_length,
+            window=self.window.to(dtype=audio.dtype),
+            return_complex=True,
+        )
+        profile = torch.log1p(spectrum.abs()).mean(dim=-1)
+        return self.profile(profile), profile
+
     @staticmethod
     def _condition(features: torch.Tensor, projection: nn.Linear, voice: torch.Tensor):
         gain, bias = projection(voice).chunk(2, dim=-1)
@@ -74,11 +87,7 @@ class SpectralUNetExtractor(nn.Module):
         spectrum = torch.stft(
             mixture, self.n_fft, self.hop_length, window=window, return_complex=True
         )
-        voice_spectrum = torch.stft(
-            enrollment, self.n_fft, self.hop_length, window=window, return_complex=True
-        )
-        voice_profile = torch.log1p(voice_spectrum.abs()).mean(dim=-1)
-        voice = self.profile(voice_profile)
+        voice, voice_profile = self.encode_voice(enrollment)
         features = torch.stack(
             (
                 spectrum.real,

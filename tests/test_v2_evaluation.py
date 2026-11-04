@@ -14,6 +14,7 @@ pytest.importorskip("scipy")
 from kezek.metrics import regions, score_extraction  # noqa: E402
 from kezek.open_yap import ConversationPair  # noqa: E402
 from kezek.tse_v2 import TargetSpeakerExtractor  # noqa: E402
+from kezek.tse_v2_unet import SpectralUNetExtractor  # noqa: E402
 
 
 def test_evaluation_writes_audio_and_scores_overlap(tmp_path):
@@ -107,3 +108,21 @@ def test_short_overlap_turn_score_detects_preserved_target(tmp_path):
     assert abs(baseline[0]) < 1e-5
     assert recovered[0] > 30
     assert recovered[1] == 1
+
+
+def test_speaker_contrastive_loss_trains_voice_profile():
+    script = Path(__file__).resolve().parents[1] / "experiments" / "V2" / "train.py"
+    spec = importlib.util.spec_from_file_location("v2_train", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    model = SpectralUNetExtractor(n_fft=64, hop_length=16)
+    target = torch.randn(2, 1024) * 0.1
+    other = torch.randn(2, 1024) * 0.1
+    enrollment = torch.randn(2, 640) * 0.1
+    loss, count = module.speaker_contrastive_loss(model, enrollment, target, other)
+    assert count == 2
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert model.profile[1].weight.grad is not None
+    assert model.profile[1].weight.grad.abs().sum() > 0

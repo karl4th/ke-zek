@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
+import torch.nn.functional as F
 
 from kezek.metrics import score_extraction
 from kezek.open_yap import check_speaker_disjoint, scan_conversations, split_conversations
@@ -68,6 +69,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--bands", type=int, default=8)
     parser.add_argument("--architecture", choices=("band", "spectral_unet"), default="band")
+    parser.add_argument("--speaker-contrastive-weight", type=float, default=0.0)
     parser.add_argument("--conditioning", choices=("mean", "band_concat"), default="mean")
     parser.add_argument("--n-fft", type=int, default=512)
     parser.add_argument("--hop-length", type=int, default=128)
@@ -87,6 +89,10 @@ def parse() -> argparse.Namespace:
         parser.error("Stop step must be between zero and total steps")
     if not 0 <= args.overlap_sampling <= 1:
         parser.error("Overlap sampling must be between zero and one")
+    if args.speaker_contrastive_weight < 0:
+        parser.error("Speaker contrastive weight must be nonnegative")
+    if args.speaker_contrastive_weight and args.architecture != "spectral_unet":
+        parser.error("Speaker contrastive loss requires spectral_unet")
     return args
 
 
@@ -222,6 +228,30 @@ def short_overlap_turn_score(
     before = float(np.mean(other[mask] ** 2))
     after = float(np.mean((estimate[mask] - target[mask]) ** 2))
     return 10 * math.log10((before + 1e-8) / (after + 1e-8)), count
+
+
+def speaker_contrastive_loss(
+    model: SpectralUNetExtractor,
+    enrollment: torch.Tensor,
+    target: torch.Tensor,
+    other: torch.Tensor,
+) -> tuple[torch.Tensor, int]:
+    """Make clean enrollment closer to the target than to the other speaker."""
+    usable = (
+        (enrollment.square().mean(-1) >= 1e-6)
+        & (target.square().mean(-1) >= 1e-6)
+        & (other.square().mean(-1) >= 1e-6)
+    )
+    if not usable.any():
+        return target.new_zeros(()), 0
+    voice, _ = model.encode_voice(enrollment[usable])
+    same, _ = model.encode_voice(target[usable])
+    different, _ = model.encode_voice(other[usable])
+    logits = torch.stack(
+        (F.cosine_similarity(voice, same), F.cosine_similarity(voice, different)), dim=-1
+    ) / 0.1
+    labels = torch.zeros(len(logits), dtype=torch.long, device=logits.device)
+    return F.cross_entropy(logits, labels), int(usable.sum())
 
 
 def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dict[str, float]:
@@ -435,6 +465,13 @@ def main() -> None:
                     parts["paired_examples"] = int(usable.sum())
                 else:
                     parts["paired_examples"] = 0
+            if args.speaker_contrastive_weight:
+                speaker_loss, speaker_examples = speaker_contrastive_loss(
+                    model, enrollment, target, other
+                )
+                loss = loss + args.speaker_contrastive_weight * speaker_loss
+                parts["speaker_contrastive_loss"] = float(speaker_loss.detach())
+                parts["speaker_contrastive_examples"] = speaker_examples
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Nonfinite training loss at step {step}")
             loss.backward()
