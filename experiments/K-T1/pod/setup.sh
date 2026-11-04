@@ -3,8 +3,8 @@
 # Pod env: "GITHUB_API": "{{ RUNPOD_SECRET_GITHUB_API }}", "HF_TOKEN": "{{ RUNPOD_SECRET_HF_TOKEN }}",
 # "AIRON_API_KEY": "{{ RUNPOD_SECRET_AIRON_API_KEY }}". Clone the repository to /workspace/ke-zek first.
 # Data goes to the container disk (/root/d), about 55 GB once extracted: LibriSpeech dev-clean,
-# train-clean-100/360, MUSAN, RIRS_NOISES, DNS Freesound noise. Each archive is deleted after it is
-# extracted, so an 80 GB container disk is enough.
+# train-clean-100/360, MUSAN, RIRS_NOISES, DNS Freesound noise. Archives are extracted as they
+# download and not kept, so an 80 GB container disk is enough.
 set -x
 . /workspace/ke-zek/experiments/K-T0/pod/env.sh  # secrets live only in the container's first process
 mkdir -p /root/d/dl /root/d/extracted && cd /root/d || exit 1
@@ -18,25 +18,43 @@ pip install -q -c constraints.txt --no-deps -e /workspace/ke-zek
 python -c "import torch; torch.zeros(1).cuda(); print('GPU OK', torch.cuda.get_device_name(0), torch.__version__)"
 ffmpeg -hide_banner -encoders | grep -E "libmp3lame|libopus"
 
-get() {  # url, then the command that extracts dl/<file>; the archive is removed afterwards
-  local url=$1 f=dl/$(basename "$1"); shift
-  aria2c -q -x16 -s16 -d dl "$url" && "$@" "$f" && rm -f "$f"
+# Every archive streams straight into tar, all of them at once: no archive is kept on disk and the
+# network never waits for an extraction. A finished archive leaves a marker in extracted/.done, so
+# a second run skips it; a broken stream is fetched again from the start (tar overwrites files).
+apt-get install -y -qq pigz lbzip2 > /dev/null
+mkdir -p extracted/.done extracted/dns_freesound
+stream() {  # url, decompressor, target dir
+  local url=$1 dec=$2 dir=$3 name=$(basename "$1")
+  [ -e extracted/.done/$name ] && return 0
+  for try in 1 2 3; do
+    if [ -e dl/$name ] && [ ! -e dl/$name.aria2 ]; then  # a whole archive from an earlier run
+      $dec -dc dl/$name | tar -x -C $dir && rm -f dl/$name && touch extracted/.done/$name && return 0
+    elif curl -sSfL --retry 5 "$url" | $dec -dc | tar -x -C $dir; then
+      touch extracted/.done/$name && return 0
+    fi
+    rm -f dl/$name dl/$name.aria2
+    echo "stream $name failed, try $try"
+  done
+  return 1
 }
-tgz() { tar -xzf "$1" -C extracted --skip-old-files; }
-tbz() { tar -xjf "$1" -C extracted/dns_freesound --skip-old-files; }
-zp() { unzip -q -n "$1" -d extracted; }
-
+set -o pipefail
+O=https://openslr.elda.org/resources
 for f in dev-clean train-clean-100 train-clean-360; do
-  get "https://openslr.elda.org/resources/12/$f.tar.gz" tgz
+  stream $O/12/$f.tar.gz pigz extracted &
 done
-get https://openslr.elda.org/resources/17/musan.tar.gz tgz
-get https://openslr.elda.org/resources/28/rirs_noises.zip zp
+stream $O/17/musan.tar.gz pigz extracted &
+# a zip cannot be streamed; RIRS_NOISES is small
+( [ -e extracted/.done/rirs_noises.zip ] || { aria2c -q -x16 -s16 -d dl $O/28/rirs_noises.zip \
+  && unzip -q -o dl/rirs_noises.zip -d extracted && rm -f dl/rirs_noises.zip \
+  && touch extracted/.done/rirs_noises.zip; } ) &
 # DNS Challenge noise: the Freesound part only (CC0). AudioSet and DEMAND are not used.
 DNS=https://dnschallengepublic.blob.core.windows.net/dns5archive/V5_training_dataset/noise_fullband
-mkdir -p extracted/dns_freesound
 for i in 000 001; do
-  get "$DNS/datasets_fullband.noise_fullband.freesound_$i.tar.bz2" tbz
+  stream "$DNS/datasets_fullband.noise_fullband.freesound_$i.tar.bz2" lbzip2 extracted/dns_freesound &
 done
+wait
+n=$(ls extracted/.done | wc -l)
+[ "$n" -eq 8 ] || { echo "only $n of 8 archives extracted"; exit 1; }
 python -c "from huggingface_hub import hf_hub_download as d; print(d('manifestro/kezek-k-t0c', 'kezek_tse.pt', local_dir='/root/d/init'))"
 find extracted/LibriSpeech -name '*.flac' | wc -l
 find extracted/musan/noise extracted/musan/music extracted/dns_freesound -name '*.wav' | wc -l
