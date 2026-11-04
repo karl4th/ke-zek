@@ -314,7 +314,8 @@ def main() -> None:
         if short_scores:
             summary["short_overlap_turn_improvement_db"] = float(np.mean(short_scores))
             summary["short_overlap_turn_examples"] = float(len(short_scores))
-        args.out.write_text(json.dumps({"config": config, "metrics": summary, "rows": rows}, indent=2))
+        report = {"config": config, "metrics": summary, "rows": rows}
+        args.out.write_text(json.dumps(report, indent=2))
         print(json.dumps(summary, sort_keys=True), flush=True)
         if tracker is not None:
             tracker.log({f"val/{key}": value for key, value in summary.items()}, step=0)
