@@ -100,8 +100,11 @@ def main() -> None:
     )
     checkpoint_sha256 = None
     if args.separator_checkpoint:
+        checksum = hashlib.sha256()
         with args.separator_checkpoint.open("rb") as source:
-            checkpoint_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                checksum.update(chunk)
+        checkpoint_sha256 = checksum.hexdigest()
         state = torch.load(args.separator_checkpoint, map_location="cpu", weights_only=True)
         if state["source_repo"] != args.separator_repo:
             raise ValueError("Checkpoint separator repository does not match")
