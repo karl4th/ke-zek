@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--tse-model", default="", help="hybrid: KezekTSE state dict for the hint")
     ap.add_argument("--hint-weight", type=float, default=1.0)
     ap.add_argument("--max-run", type=int, default=200, help="block: longest run, frames (0 = off)")
+    ap.add_argument("--diagnose", action="store_true", help="block: save per-run decisions")
     ap.add_argument("--oracle-assign", action="store_true", help="block: label runs by the clean tracks")
     ap.add_argument("--same-cos", type=float, default=0.5, help="block: one-voice check")
     ap.add_argument("--split", choices=("val", "test"), default="val")
@@ -102,7 +103,7 @@ def main():
         model = (BandSep() if a.arch == "band" else SepTasNet()).to(dev).eval()
         model.load_state_dict(torch.load(a.model, map_location="cpu"))
     rng = np.random.default_rng(a.seed)
-    scores, infos, used = [], [], 0
+    scores, infos, used, diag = [], [], 0, []
     t0 = time.time()
     exc = int(a.excerpt_s * 100)
     for pair in pairs:
@@ -159,6 +160,18 @@ def main():
             s = metrics.segment_scores(est, t, o, mix, at, ao, disputed_frames(at, ao), l_ref)
             s["conv"], s["side"] = pair.conversation_id, side
             scores.append(s)
+            if info.get("detail") is not None:
+                det = info.pop("detail")
+                if a.diagnose:
+                    det["truth"] = [
+                        bool(np.sum((streams[s_][a_ * FRAME : b_ * FRAME] - t[a_ * FRAME : b_ * FRAME]) ** 2)
+                             < np.sum((streams[s_][a_ * FRAME : b_ * FRAME] - o[a_ * FRAME : b_ * FRAME]) ** 2))
+                        for s_, a_, b_ in det["runs"]
+                    ]
+                    det["energy"] = [float(np.sum(streams[s_][a_ * FRAME : b_ * FRAME] ** 2))
+                                     for s_, a_, b_ in det["runs"]]
+                    det["conv"], det["side"] = pair.conversation_id, side
+                    diag.append(det)
             infos.append(info)
             if a.save_audio and used < 6:
                 import soundfile as sf
@@ -180,9 +193,12 @@ def main():
     }
     out["ci"] = metrics.bootstrap_ci(scores, n_boot=500)
     if infos and infos[0]:
-        out["block_info_mean"] = {k: float(np.mean([i[k] for i in infos])) for k in infos[0]}
+        keys = [k for k in infos[0] if k != "detail"]
+        out["block_info_mean"] = {k: float(np.mean([i[k] for i in infos])) for k in keys}
     json.dump(out, open(a.out, "w"), indent=1)
     json.dump(scores, open(a.out.replace(".json", "_items.json"), "w"))
+    if diag:
+        json.dump(diag, open(a.out.replace(".json", "_runs.json"), "w"))
     keys = ("overlap_sisdri", "target_solo_sisdr", "target_solo_level_db", "other_solo_leak_db",
             "both_silent_db", "backchannel_recall", "backchannel_n")
     print(json.dumps({k: round(out[k], 3) for k in keys}), flush=True)

@@ -279,5 +279,10 @@ def assign(
         "threshold": thr,
         "target_runs": int(label.sum()),
         "gated_components": gated,
+        "detail": {
+            "runs": runs, "label": label.tolist(), "voiced": voiced.tolist(),
+            "score": score.tolist(), "evidence": evidence.tolist(),
+            "root": [r for r, _ in roots],
+        },
     }
     return out, info
