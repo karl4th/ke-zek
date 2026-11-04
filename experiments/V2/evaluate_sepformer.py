@@ -62,6 +62,25 @@ def _voice_score(classifier, enrollment: np.ndarray, source: np.ndarray, device:
     return float(F.cosine_similarity(embed(enrollment), embed(source), dim=0))
 
 
+def _windowed_voice_score(
+    classifier, enrollment: np.ndarray, source: np.ndarray, device: str,
+    window_seconds: float,
+) -> float:
+    if window_seconds <= 0:
+        return _voice_score(classifier, enrollment, source, device)
+    width = round(window_seconds * 16_000)
+    if len(source) <= width:
+        return _voice_score(classifier, enrollment, source, device)
+    hop = max(1, width // 2)
+    starts = list(range(0, len(source) - width + 1, hop))
+    if starts[-1] != len(source) - width:
+        starts.append(len(source) - width)
+    return max(
+        _voice_score(classifier, enrollment, source[start : start + width], device)
+        for start in starts
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
@@ -70,6 +89,7 @@ def main() -> None:
     parser.add_argument("--examples", type=int, default=128)
     parser.add_argument("--mixture-seconds", type=float, default=4.0)
     parser.add_argument("--enrollment-seconds", type=float, default=6.0)
+    parser.add_argument("--speaker-window-seconds", type=float, default=0.0)
     parser.add_argument("--trim-silence", action="store_true")
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
@@ -80,6 +100,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.examples < 1 or min(args.mixture_seconds, args.enrollment_seconds) <= 0:
         parser.error("Examples and window durations must be positive")
+    if args.speaker_window_seconds < 0:
+        parser.error("Speaker window duration cannot be negative")
     if not args.no_tracker and (
         not os.environ.get("AIRON_API_KEY") or not os.environ.get("AIRON_URL")
     ):
@@ -137,6 +159,7 @@ def main() -> None:
         "examples": args.examples,
         "mixture_seconds": args.mixture_seconds,
         "enrollment_seconds": args.enrollment_seconds,
+        "speaker_window_seconds": args.speaker_window_seconds,
         "trim_silence": args.trim_silence,
         "val_eligible_conversations": len(dataset.pairs),
     }
@@ -199,7 +222,10 @@ def main() -> None:
                     ]
                     clean_selected_correct.append(float(clean_scores[0] > clean_scores[1]))
                 scores_by_source = [
-                    _voice_score(classifier, enrollment, source, args.device)
+                    _windowed_voice_score(
+                        classifier, enrollment, source, args.device,
+                        args.speaker_window_seconds,
+                    )
                     for source in matching_sources
                 ]
                 selected = int(np.argmax(scores_by_source))
@@ -208,7 +234,10 @@ def main() -> None:
                 if args.trim_silence:
                     opposite_enrollment = trim_by_energy(opposite_enrollment)
                 reverse_selected = int(np.argmax([
-                    _voice_score(classifier, opposite_enrollment, source, args.device)
+                    _windowed_voice_score(
+                        classifier, opposite_enrollment, source, args.device,
+                        args.speaker_window_seconds,
+                    )
                     for source in matching_sources
                 ]))
                 reverse = sources[reverse_selected]
