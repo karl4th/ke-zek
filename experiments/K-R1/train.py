@@ -24,12 +24,12 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "..", "K-T1"))
-from evaluate import validate  # noqa: E402
+from models import ARCHS, Extractor  # noqa: E402
 from rdata import RealWindows, collate, split_ids, splits  # noqa: E402
+from validate import validate  # noqa: E402
 
 from kezek.losses import kt1_loss  # noqa: E402
-from kezek.model import KezekTSE, SpeakerEncoder, si_sdr_loss  # noqa: E402
+from kezek.model import SpeakerEncoder, si_sdr_loss  # noqa: E402
 
 
 def lr_lambda(step: int, warmup: int, total: int) -> float:
@@ -61,7 +61,8 @@ def git_commit() -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
-    ap.add_argument("--init", default="", help="K-T0c state dict; empty = random init")
+    ap.add_argument("--arch", choices=ARCHS, default="kezek")
+    ap.add_argument("--init", default="", help="state dict of the network; empty = random init")
     ap.add_argument("--loss", choices=("kt1", "sisdr"), default="kt1")
     ap.add_argument("--spk-weight", type=float, default=0.1)
     ap.add_argument("--steps", type=int, default=40_000)
@@ -124,9 +125,10 @@ def main():
 
     dev = a.device
     se = SpeakerEncoder(device=dev)
-    model = KezekTSE().to(dev)
+    model = Extractor(a.arch).to(dev)
     if a.init:
-        model.load_state_dict(torch.load(a.init, map_location="cpu"))
+        model.net.load_state_dict(torch.load(a.init, map_location="cpu"))
+    print(f"{a.arch}: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M parameters", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_lambda(s, a.warmup, a.steps))
     log = []
@@ -139,9 +141,8 @@ def main():
 
     def run_eval(step: int):
         m = {}
-        with torch.no_grad():
-            for name, ds in val_sets.items():
-                m.update({f"{name}/{k}": v for k, v in validate(model, se, ds, dev).items()})
+        for name, ds in val_sets.items():
+            m.update({f"{name}/{k}": v for k, v in validate(model, se, ds, dev).items()})
         keep = (
             "all/overlap_sisdri", "all/overlap_sisdr", "all/target_solo_snr",
             "all/target_solo_level_db", "all/other_solo_leak_db", "all/both_silent_db",
@@ -160,9 +161,10 @@ def main():
     last = min(a.steps, a.stop_at or a.steps)
     for step, b in enumerate(dl, start + 1):
         mix, clean = b["mix"].to(dev, non_blocking=True), b["clean"].to(dev, non_blocking=True)
+        enr = b["enr_t"].to(dev, non_blocking=True)
         with torch.no_grad():
-            d = se(b["enr_t"].to(dev, non_blocking=True))
-        est = model(mix, d)
+            d = se(enr)
+        est = model(mix, enr, d)
         if a.loss == "kt1":
             loss, parts = kt1_loss(
                 est, clean, b["act_t"].to(dev), b["silent"].to(dev), b["l_ref"].to(dev), d, se,
@@ -188,12 +190,12 @@ def main():
             )
         if step % a.eval_every == 0 or step == last:
             m = run_eval(step)
-            torch.save(model.state_dict(), f"{a.out}/kezek_tse.pt")
+            torch.save(model.net.state_dict(), f"{a.out}/kezek_tse.pt")
             score = m["nat/all/overlap_sisdr"]
             if np.isfinite(score) and score >= max(
                 e["nat/all/overlap_sisdr"] for e in log if np.isfinite(e["nat/all/overlap_sisdr"])
             ):
-                torch.save(model.state_dict(), f"{a.out}/best.pt")
+                torch.save(model.net.state_dict(), f"{a.out}/best.pt")
             state = {
                 "step": step, "model": model.state_dict(), "opt": opt.state_dict(),
                 "sched": sched.state_dict(), "log": log,

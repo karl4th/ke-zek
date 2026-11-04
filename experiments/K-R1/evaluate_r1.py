@@ -20,22 +20,18 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "..", "K-T1"))
-from evaluate import validate  # noqa: E402
+from models import ARCHS, Extractor, Mixture  # noqa: E402
 from rdata import RealWindows, splits  # noqa: E402
+from validate import validate  # noqa: E402
 
-from kezek.model import KezekTSE, SpeakerEncoder  # noqa: E402
-
-
-class Mixture(torch.nn.Module):
-    def forward(self, mix, d):
-        return mix
+from kezek.model import SpeakerEncoder  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--model", required=True, help="'mixture' or a KezekTSE state dict")
+    ap.add_argument("--arch", choices=ARCHS, default="kezek")
     ap.add_argument("--split", choices=("val", "test"), default="val")
     ap.add_argument("--final", action="store_true", help="required to read the test split")
     ap.add_argument("--n", type=int, default=400)
@@ -55,12 +51,11 @@ def main():
     if a.model == "mixture":
         model = Mixture()
     else:
-        model = KezekTSE().to(a.device)
-        model.load_state_dict(torch.load(a.model, map_location="cpu"))
+        model = Extractor(a.arch).to(a.device)
+        model.net.load_state_dict(torch.load(a.model, map_location="cpu"))
     out = {"model": a.model, "split": a.split, "n": a.n, "conversations": len(pairs)}
-    with torch.no_grad():
-        for name, ds in sets.items():
-            out.update({f"{name}/{k}": v for k, v in validate(model, se, ds, a.device, ci=True).items()})
+    for name, ds in sets.items():
+        out.update({f"{name}/{k}": v for k, v in validate(model, se, ds, a.device, ci=True).items()})
     json.dump(out, open(a.out, "w"), indent=1)
     keys = ("all/overlap_sisdri", "all/target_solo_snr", "all/target_solo_level_db",
             "all/other_solo_leak_db", "all/both_silent_db", "all/backchannel_recall", "pick_acc")
