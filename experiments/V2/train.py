@@ -42,6 +42,11 @@ def parse() -> argparse.Namespace:
         default=0.0,
         help="Chance of centering a training crop on word overlap",
     )
+    parser.add_argument(
+        "--paired-directions",
+        action="store_true",
+        help="Train both speaker directions on each mixture when both voice samples are usable",
+    )
     parser.add_argument("--val-examples", type=int, default=32)
     parser.add_argument("--eval-every", type=int, default=250)
     parser.add_argument("--max-train-conversations", type=int, default=0)
@@ -317,6 +322,21 @@ def main() -> None:
             other = sample["other"].to(args.device, non_blocking=True)
             output = model(mixture, enrollment)
             loss, parts = extraction_loss(output, target, other)
+            if args.paired_directions:
+                opposite_enrollment = sample["other_enrollment"].to(
+                    args.device, non_blocking=True
+                )
+                usable = opposite_enrollment.square().mean(-1) >= 1e-6
+                if usable.any():
+                    opposite_output = model(mixture[usable], opposite_enrollment[usable])
+                    opposite_loss, opposite_parts = extraction_loss(
+                        opposite_output, other[usable], target[usable]
+                    )
+                    loss = 0.5 * (loss + opposite_loss)
+                    parts.update({f"opposite_{key}": value for key, value in opposite_parts.items()})
+                    parts["paired_examples"] = int(usable.sum())
+                else:
+                    parts["paired_examples"] = 0
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Nonfinite training loss at step {step}")
             loss.backward()
