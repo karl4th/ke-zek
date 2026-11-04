@@ -65,6 +65,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--blocks", type=int, default=4)
     parser.add_argument("--bands", type=int, default=8)
+    parser.add_argument("--conditioning", choices=("mean", "band_concat"), default="mean")
     parser.add_argument("--n-fft", type=int, default=512)
     parser.add_argument("--hop-length", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
@@ -308,6 +309,7 @@ def main() -> None:
         bands=args.bands,
         width=args.width,
         blocks=args.blocks,
+        conditioning=args.conditioning,
     ).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
     warmup = min(100, max(1, args.steps // 20))
@@ -406,6 +408,7 @@ def main() -> None:
                             "bands": args.bands,
                             "width": args.width,
                             "blocks": args.blocks,
+                            "conditioning": args.conditioning,
                         },
                     },
                     model_path,

@@ -56,6 +56,7 @@ class TargetSpeakerExtractor(nn.Module):
         width: int = 128,
         blocks: int = 4,
         enrollment_tokens: int = 32,
+        conditioning: str = "mean",
     ) -> None:
         super().__init__()
         if sample_rate != 16000:
@@ -66,11 +67,14 @@ class TargetSpeakerExtractor(nn.Module):
             raise ValueError("Invalid number of bands")
         if width < 4 or width % 4 or blocks < 1 or enrollment_tokens < 1:
             raise ValueError("Invalid model size")
+        if conditioning not in {"mean", "band_concat"}:
+            raise ValueError("Conditioning must be mean or band_concat")
 
         self.sample_rate = sample_rate
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.enrollment_tokens = enrollment_tokens
+        self.conditioning = conditioning
         self.band_sizes = [
             len(part) for part in torch.tensor_split(torch.arange(n_fft // 2 + 1), bands)
         ]
@@ -80,6 +84,15 @@ class TargetSpeakerExtractor(nn.Module):
         )
         self.band_outputs = nn.ModuleList(nn.Linear(width, 2 * size) for size in self.band_sizes)
         self.voice_norm = nn.LayerNorm(width)
+        self.voice_band_projection = (
+            nn.Sequential(
+                nn.LayerNorm(bands * width),
+                nn.Linear(bands * width, width),
+                nn.GELU(),
+            )
+            if conditioning == "band_concat"
+            else None
+        )
         self.voice_attention = nn.MultiheadAttention(width, num_heads=4, batch_first=True)
         self.voice_fusion = nn.Linear(width * 3, width)
         self.separator = nn.ModuleList(BandBlock(width) for _ in range(blocks))
@@ -120,7 +133,13 @@ class TargetSpeakerExtractor(nn.Module):
         mix_spec = self._stft(mixture)
         sample_spec = self._stft(enrollment)
         mix = self._band_features(mix_spec)
-        sample = self._band_features(sample_spec).mean(dim=1)
+        sample_bands = self._band_features(sample_spec)
+        if self.voice_band_projection is None:
+            sample = sample_bands.mean(dim=1)
+        else:
+            sample = self.voice_band_projection(
+                sample_bands.permute(0, 2, 1, 3).flatten(2)
+            )
         sample = self.voice_norm(sample)
         pooled_voice = sample.mean(dim=1)
         sample_tokens = F.adaptive_avg_pool1d(

@@ -40,6 +40,22 @@ def test_enrollment_changes_output_and_gradients_reach_conditioning():
     assert model.voice_fusion.weight.grad.abs().sum() > 0
 
 
+def test_band_concat_conditioning_preserves_band_features_for_gradient():
+    model = TargetSpeakerExtractor(
+        n_fft=64, hop_length=16, bands=4, width=8, blocks=1,
+        enrollment_tokens=4, conditioning="band_concat",
+    )
+    for head in model.band_outputs:
+        torch.nn.init.normal_(head.weight, std=0.01)
+    mixture = torch.randn(1, 1024) * 0.1
+    enrollment = torch.randn(1, 640) * 0.1
+    output = model(mixture, enrollment).waveform
+    assert output.shape == mixture.shape
+    output.square().mean().backward()
+    assert model.voice_band_projection[1].weight.grad is not None
+    assert model.voice_band_projection[1].weight.grad.abs().sum() > 0
+
+
 def test_rejects_incompatible_waveforms():
     model = small_model()
     with pytest.raises(ValueError, match="batch sizes"):
