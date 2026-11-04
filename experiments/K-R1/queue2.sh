@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The K-R1 queue in priority order: the block separator right after the first monolith.
+# The K-R1 queue in priority order: the block separator first, then the monoliths.
 # Waits for any K-R1 training already running, skips finished runs, resumes interrupted ones.
 #   bash experiments/K-R1/queue2.sh /data/oy16 /data/init /data/runs [STEPS] [ABLATION_STEPS]
 set -uo pipefail
@@ -22,8 +22,8 @@ train() {  # script, name, steps, extra arguments
 }
 
 kt0c=(--init "$init/kezek-k-t0c/kezek_tse.pt" --flip-init)
-train train.py r1_kt0c_state "$steps" "${kt0c[@]}" --lr 1e-4 --amp
 train train_sep.py s1_sep_kt0c "$steps" "${kt0c[@]}" --lr 2e-4 --amp
+train train.py r1_kt0c_state "$steps" "${kt0c[@]}" --lr 1e-4 --amp
 train train.py r5_kt0c_state_dual "$short" "${kt0c[@]}" --lr 1e-4 --dual 0.3 --amp
 train train.py r2_scratch_state "$short" --lr 1e-3 --warmup 2000 --amp
 train train.py r3_band_state "$short" --arch band --lr 5e-4 --warmup 2000 --amp
