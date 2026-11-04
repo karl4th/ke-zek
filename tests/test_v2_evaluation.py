@@ -82,3 +82,28 @@ def test_split_manifest_keeps_the_original_holdout_when_data_grows(tmp_path):
         ["conv_1"],
         ["conv_2"],
     ]
+
+
+def test_short_overlap_turn_score_detects_preserved_target(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "experiments" / "V2" / "train.py"
+    spec = importlib.util.spec_from_file_location("v2_train", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    (tmp_path / "speaker_a_transcript.json").write_text(
+        json.dumps({"words": [{"start": 0.2, "end": 0.55}]})
+    )
+    (tmp_path / "speaker_b_transcript.json").write_text(
+        json.dumps({"words": [{"start": 0.3, "end": 0.7}]})
+    )
+    sample = {"conversation_dir": str(tmp_path), "target_side": 0, "mixture_start_seconds": 0.0}
+    target = np.zeros(16_000, dtype="float32")
+    other = np.zeros_like(target)
+    target[3200:8800] = 0.05
+    other[4800:11200] = 0.05
+    baseline = module.short_overlap_turn_score(sample, target + other, target, other)
+    recovered = module.short_overlap_turn_score(sample, target, target, other)
+    assert baseline is not None and recovered is not None
+    assert abs(baseline[0]) < 1e-5
+    assert recovered[0] > 30
+    assert recovered[1] == 1

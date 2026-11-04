@@ -12,6 +12,7 @@ import json
 import math
 import os
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -177,11 +178,56 @@ def upload_checkpoint(args: argparse.Namespace, paths: list[Path]) -> None:
         raise RuntimeError("Uploaded checkpoint files have unexpected sizes")
 
 
+@lru_cache(maxsize=512)
+def transcript_words(path: Path) -> tuple[tuple[float, float], ...]:
+    words = json.loads(path.read_text())["words"]
+    return tuple(sorted((float(word["start"]), float(word["end"])) for word in words))
+
+
+def short_overlap_turn_score(
+    sample: dict, estimate: np.ndarray, target: np.ndarray, other: np.ndarray
+) -> tuple[float, int] | None:
+    """Score isolated short target turns during transcript overlap against mixture error."""
+    if not {"conversation_dir", "target_side", "mixture_start_seconds"} <= sample.keys():
+        return None
+    directory = Path(sample["conversation_dir"])
+    side = "ab"[sample["target_side"]]
+    target_words = transcript_words(directory / f"speaker_{side}_transcript.json")
+    other_words = transcript_words(directory / f"speaker_{'b' if side == 'a' else 'a'}_transcript.json")
+    groups: list[tuple[float, float]] = []
+    for start, end in target_words:
+        if groups and start - groups[-1][1] <= 0.3:
+            groups[-1] = (groups[-1][0], max(groups[-1][1], end))
+        else:
+            groups.append((start, end))
+    crop_start = float(sample["mixture_start_seconds"])
+    crop_end = crop_start + len(target) / SAMPLE_RATE
+    mask = np.zeros(len(target), dtype=bool)
+    count = 0
+    for start, end in groups:
+        if end - start > 1.2 or start < crop_start or end > crop_end:
+            continue
+        if not any(min(end, other_end) - max(start, other_start) >= 0.04
+                   for other_start, other_end in other_words):
+            continue
+        low = max(0, round((start - crop_start) * SAMPLE_RATE))
+        high = min(len(target), round((end - crop_start) * SAMPLE_RATE))
+        mask[low:high] = True
+        count += 1
+    if not count or float(np.mean(other[mask] ** 2)) < 1e-8:
+        return None
+    before = float(np.mean(other[mask] ** 2))
+    after = float(np.mean((estimate[mask] - target[mask]) ** 2))
+    return 10 * math.log10((before + 1e-8) / (after + 1e-8)), count
+
+
 def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dict[str, float]:
     model.eval()
     scores: list[dict[str, float]] = []
     reverse_scores: list[float] = []
     enrollment_deltas: list[float] = []
+    short_turn_scores: list[float] = []
+    short_turn_count = 0
     demo_dir.mkdir(parents=True, exist_ok=True)
     with torch.inference_mode():
         for index in range(len(dataset)):
@@ -192,6 +238,10 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
             target = sample["target"].numpy()
             other = sample["other"].numpy()
             scores.append(score_extraction(estimate, target, other, SAMPLE_RATE).as_dict())
+            short_turn = short_overlap_turn_score(sample, estimate, target, other)
+            if short_turn is not None:
+                short_turn_scores.append(short_turn[0])
+                short_turn_count += short_turn[1]
             if (
                 "other_enrollment" in sample
                 and float(sample["other_enrollment"].square().mean()) >= 1e-6
@@ -229,6 +279,10 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
     if enrollment_deltas:
         summary["enrollment_delta_ratio"] = float(np.mean(enrollment_deltas))
         summary["reverse_examples"] = float(len(enrollment_deltas))
+    if short_turn_scores:
+        summary["short_overlap_turn_improvement_db"] = float(np.mean(short_turn_scores))
+        summary["short_overlap_turn_examples"] = float(len(short_turn_scores))
+        summary["short_overlap_turn_count"] = float(short_turn_count)
     return summary
 
 
