@@ -86,3 +86,29 @@ def test_overlap_sampling_centers_training_crops_on_words(tmp_path):
     for sample in dataset:
         assert sample["mixture_start_seconds"] <= 10.75
         assert sample["mixture_start_seconds"] + 2 >= 10.75
+
+
+def test_power_selection_prefers_stronger_clean_enrollment(tmp_path):
+    directory = tmp_path / "conversations" / "conv_demo"
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text(
+        json.dumps({"conversation_id": "demo", "speaker_a_id": "a", "speaker_b_id": "b"})
+    )
+    rate, seconds = 16_000, 20
+    time = np.arange(rate * seconds) / rate
+    tone = np.sin(2 * np.pi * 220 * time)
+    sf.write(directory / "speaker_a.wav", tone * np.where(time < 10, 0.01, 0.1), rate)
+    sf.write(directory / "speaker_b.wav", tone * np.where(time < 10, 0.1, 0.01), rate)
+    pairs = scan_conversations(tmp_path)
+    ratio = OpenYapWindows(pairs, 30, seed=7, mixture_seconds=2, enrollment_seconds=3)
+    power = OpenYapWindows(
+        pairs, 30, seed=7, mixture_seconds=2, enrollment_seconds=3,
+        enrollment_selection="power",
+    )
+    improvements = [
+        float(power[index]["enrollment"].square().mean())
+        - float(ratio[index]["enrollment"].square().mean())
+        for index in range(30)
+    ]
+    assert all(value >= -1e-8 for value in improvements)
+    assert any(value > 1e-4 for value in improvements)

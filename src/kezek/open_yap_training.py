@@ -83,6 +83,7 @@ class OpenYapWindows(torch.utils.data.Dataset):
         gap_seconds: float = 2.0,
         enrollment_candidates: int = 4,
         overlap_sampling: float = 0.0,
+        enrollment_selection: str = "ratio",
     ) -> None:
         if count < 1 or mixture_seconds <= 0 or enrollment_seconds <= 0:
             raise ValueError("Count and window durations must be positive")
@@ -90,12 +91,15 @@ class OpenYapWindows(torch.utils.data.Dataset):
             raise ValueError("Gap must be nonnegative and enrollment candidates positive")
         if not 0 <= overlap_sampling <= 1:
             raise ValueError("Overlap sampling must be between zero and one")
+        if enrollment_selection not in {"ratio", "power"}:
+            raise ValueError("Enrollment selection must be ratio or power")
         self.count, self.seed = count, seed
         self.mixture_seconds = mixture_seconds
         self.enrollment_seconds = enrollment_seconds
         self.gap_seconds = gap_seconds
         self.enrollment_candidates = enrollment_candidates
         self.overlap_sampling = overlap_sampling
+        self.enrollment_selection = enrollment_selection
         self.pairs = [
             pair
             for pair in pairs
@@ -158,7 +162,11 @@ class OpenYapWindows(torch.utils.data.Dataset):
             other_power = float(np.mean(other_sample**2))
             if other_power > best_other_power:
                 best_other_power, other_enrollment = other_power, other_sample
-            score = target_power / (other_power + 1e-6)
+            score = (
+                target_power
+                if self.enrollment_selection == "power"
+                else target_power / (other_power + 1e-6)
+            )
             if target_power < 1e-6:
                 score = -1.0
             if score > best_score:

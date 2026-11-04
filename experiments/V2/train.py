@@ -42,6 +42,12 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--mixture-seconds", type=float, default=4.0)
     parser.add_argument("--enrollment-seconds", type=float, default=6.0)
     parser.add_argument(
+        "--enrollment-selection",
+        choices=("ratio", "power"),
+        default="ratio",
+        help="Choose the loudest clean target sample, or the old target/other power ratio",
+    )
+    parser.add_argument(
         "--overlap-sampling",
         type=float,
         default=0.0,
@@ -286,6 +292,7 @@ def main() -> None:
         args.mixture_seconds,
         args.enrollment_seconds,
         overlap_sampling=args.overlap_sampling,
+        enrollment_selection=args.enrollment_selection,
     )
     val_set = OpenYapWindows(
         val_pairs,
@@ -293,6 +300,7 @@ def main() -> None:
         args.seed + 10_000,
         args.mixture_seconds,
         args.enrollment_seconds,
+        enrollment_selection=args.enrollment_selection,
     )
     model = TargetSpeakerExtractor(
         n_fft=args.n_fft,
