@@ -112,6 +112,7 @@ def assign(
     refine: int = 5,
     min_target_cos: float = 0.35,
     gate_frames: int = 200,
+    same_cos: float = 0.5,
     fade: int = 160,
 ) -> tuple[np.ndarray, dict]:
     """Target waveform from two separated streams; ``info`` describes the decision.
@@ -199,23 +200,27 @@ def assign(
         if (new == label).all():
             break
         label = new
-    # Two clusters always exist, even when the target says nothing in this stretch. A component
-    # stays with the target only if its target-side voiced runs match the enrollment in absolute
-    # terms (ECAPA cosine of runs >= 2 s: same person median 0.62, other person p95 0.26). Only
-    # runs of at least ``gate_frames`` count: shorter ones are too noisy to judge alone.
+    # Two clusters always exist, even when only one person talks in this stretch. If the long
+    # runs on the two sides sound like the same person (centroid cosine >= ``same_cos``), there
+    # is one voice here, and it is the target only if it matches the enrollment in absolute
+    # terms (ECAPA cosine of runs >= 2 s: same person median 0.62, other person p95 0.26).
+    # ``gated``: 0 two voices, 1 one voice = target, -1 one voice = the other person.
     gated = 0
-    if min_target_cos > -1:
-        comps: dict[int, list[int]] = {}
-        for i, (r, _) in enumerate(roots):
-            comps.setdefault(r, []).append(i)
-        for members in comps.values():
-            tv = [i for i in members if label[i] and runs[i][2] - runs[i][1] >= gate_frames]
-            if not tv:
-                continue  # no long target run here: too little voice to overrule the labels
-            w = weight[tv]
-            if float(np.average(score[tv], weights=w)) < min_target_cos:
-                label[members] = False
-                gated += 1
+    long_runs = np.array([b - a >= gate_frames for _, a, b in runs]) & voiced
+    if min_target_cos > -1 and long_runs.any():
+        lt, lo = long_runs & label, long_runs & ~label
+
+        def centroid(m):
+            v = (weight[m][:, None] * emb[m]).sum(0)
+            return v / (np.linalg.norm(v) + 1e-9)
+
+        one_voice = not lt.any() or not lo.any() or float(centroid(lt) @ centroid(lo)) >= same_cos
+        if one_voice:
+            # the long runs are all this one person; short replies overlapping them take the other
+            # label through the conversation edges
+            sign = 1.0 if float(centroid(long_runs) @ enr) >= min_target_cos else -1.0
+            label = labels_from(np.where(long_runs, sign * 1e3 * weight, evidence))
+            gated = 1 if sign > 0 else -1
     out = np.zeros(len(mix), np.float32)
     ramp = np.linspace(0, 1, fade, dtype=np.float32)
     for (s, a, b), t in zip(runs, label, strict=True):
