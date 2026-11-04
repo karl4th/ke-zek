@@ -18,6 +18,12 @@ from kezek.open_yap import scan_conversations
 from kezek.open_yap_training import OpenYapWindows
 
 
+def align_to_mixture(estimate: np.ndarray, mixture: np.ndarray) -> np.ndarray:
+    """Undo a pretrained head's peak normalization using the observed mixture."""
+    gain = float(np.dot(mixture, estimate)) / max(float(np.dot(estimate, estimate)), 1e-8)
+    return estimate * np.clip(gain, -100.0, 100.0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
@@ -30,6 +36,7 @@ def main() -> None:
         default="target-speaker-extraction",
     )
     parser.add_argument("--upstream", default="WavLM_BASE")
+    parser.add_argument("--raw-output", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--run-name", default="v2-direct-pretrained-tse-val128")
     parser.add_argument("--split", choices=("val", "test"), default="val")
@@ -61,6 +68,7 @@ def main() -> None:
         "model_revision": HfApi().model_info("SepRQ/SepRQ").sha,
         "task": args.task,
         "upstream": args.upstream,
+        "gain_alignment": not args.raw_output,
         "split_manifest": str(args.split_manifest),
         "split": args.split,
         "examples": args.examples,
@@ -93,6 +101,8 @@ def main() -> None:
                 estimate = np.pad(
                     estimate[: len(target)], (0, max(0, len(target) - len(estimate)))
                 )
+                if not args.raw_output:
+                    estimate = align_to_mixture(estimate, mixture.numpy())
                 score = score_extraction(estimate, target, other, 16_000)
                 scores.append(score.as_dict())
                 short = short_overlap_turn_score(sample, estimate, target, other)
