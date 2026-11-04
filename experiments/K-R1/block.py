@@ -111,6 +111,7 @@ def assign(
     rel_db: float = 35.0,
     refine: int = 5,
     min_target_cos: float = 0.35,
+    gate_frames: int = 200,
     fade: int = 160,
 ) -> tuple[np.ndarray, dict]:
     """Target waveform from two separated streams; ``info`` describes the decision.
@@ -200,16 +201,17 @@ def assign(
         label = new
     # Two clusters always exist, even when the target says nothing in this stretch. A component
     # stays with the target only if its target-side voiced runs match the enrollment in absolute
-    # terms (ECAPA cosine of runs >= 2 s: same person median 0.62, other person p95 0.26).
+    # terms (ECAPA cosine of runs >= 2 s: same person median 0.62, other person p95 0.26). Only
+    # runs of at least ``gate_frames`` count: shorter ones are too noisy to judge alone.
     gated = 0
     if min_target_cos > -1:
         comps: dict[int, list[int]] = {}
         for i, (r, _) in enumerate(roots):
             comps.setdefault(r, []).append(i)
         for members in comps.values():
-            tv = [i for i in members if label[i] and voiced[i]]
+            tv = [i for i in members if label[i] and runs[i][2] - runs[i][1] >= gate_frames]
             if not tv:
-                continue
+                continue  # no long target run here: too little voice to overrule the labels
             w = weight[tv]
             if float(np.average(score[tv], weights=w)) < min_target_cos:
                 label[members] = False
