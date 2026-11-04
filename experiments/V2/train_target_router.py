@@ -13,7 +13,10 @@ import torch
 import torch.nn.functional as F
 import torchaudio.functional as AF
 from evaluate_sepformer import (
-    SEPARATOR_REPO, SPEAKER_REPO, _speaker_embedding, trim_by_energy,
+    SEPARATOR_REPO,
+    SPEAKER_REPO,
+    _speaker_embedding,
+    trim_by_energy,
 )
 from train import git_state, select_splits, short_overlap_turn_score
 from train_sepformer import _si_sdr, align_sources_to_mixture
@@ -24,7 +27,9 @@ from kezek.open_yap_training import OpenYapWindows
 from kezek.target_router import TargetRouter, oracle_route_labels
 
 
-def speaker_features(classifier, enrollment, sources, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+def speaker_features(
+    classifier, enrollment, sources, device: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Embed clean enrollment and separated sources without updating the encoder."""
     batch_enrollment = []
     batch_sources = []

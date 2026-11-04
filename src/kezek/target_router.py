@@ -88,4 +88,5 @@ def oracle_route_labels(
     candidates = torch.cat((sources, torch.zeros_like(target[..., None])), dim=-1)
     errors = (candidates - target[..., None]).square().transpose(1, 2)
     frame_errors = F.adaptive_avg_pool1d(errors, frames)
+    frame_errors[:, :2] += 1e-8  # Prefer silence when a source is equally silent.
     return frame_errors.argmin(dim=1)

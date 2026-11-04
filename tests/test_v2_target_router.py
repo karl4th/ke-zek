@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from kezek.target_router import TargetRouter, oracle_route_labels
+from kezek.target_router import TargetRouter, oracle_route_labels  # noqa: E402
 
 
 def test_router_uses_enrollment_and_follows_source_swap():
