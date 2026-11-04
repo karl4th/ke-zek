@@ -106,7 +106,7 @@ def main() -> None:
     parser.add_argument("--enrollment-seconds", type=float, default=15.0)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--run-name", default="v2-speaker-encoder-adaptation")
-    parser.add_argument("--hf-repo", required=True)
+    parser.add_argument("--hf-repo", help="Optional private repository for checkpoint backup")
     args = parser.parse_args()
     if min(args.steps, args.batch_size, args.eval_every, args.val_examples) < 1:
         parser.error("Steps, batch size, and validation settings must be positive")
@@ -208,7 +208,8 @@ def main() -> None:
             "model": encoder.state_dict(), "step": 0,
             "speaker_repo": SPEAKER_REPO, "speaker_revision": model_revision,
         }, args.out / "best_model.pt")
-        upload_checkpoint(args, [args.out / "best_model.pt", args.out / "manifest.json"])
+        if args.hf_repo:
+            upload_checkpoint(args, [args.out / "best_model.pt", args.out / "manifest.json"])
         for step, sample in enumerate(loader, 1):
             enrollment = sample["enrollment"].to(args.device, non_blocking=True)
             target = sample["target"].to(args.device, non_blocking=True)
@@ -262,7 +263,8 @@ def main() -> None:
                     "best_accuracy": best_accuracy,
                 }, args.out / "last.pt")
                 paths.append(args.out / "last.pt")
-                upload_checkpoint(args, paths)
+                if args.hf_repo:
+                    upload_checkpoint(args, paths)
             if step == args.steps:
                 break
     finally:
