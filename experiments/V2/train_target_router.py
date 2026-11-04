@@ -34,7 +34,7 @@ def speaker_features(
     batch_enrollment = []
     batch_sources = []
     with torch.inference_mode():
-        upsampled = AF.resample(sources.transpose(1, 2), 8_000, 16_000)
+        upsampled = AF.resample(sources.transpose(1, 2).contiguous(), 8_000, 16_000)
         for index in range(len(sources)):
             reference = trim_by_energy(enrollment[index].detach().cpu().numpy())
             voice = _speaker_embedding(classifier, reference, device)
@@ -117,7 +117,7 @@ def evaluate(router, separator, classifier, dataset, device: str) -> tuple[dict,
             score = score_extraction(estimate, target, other, 16_000)
             scores.append(score.as_dict())
             reference_sources = AF.resample(
-                sources.transpose(1, 2), 8_000, 16_000
+                sources.transpose(1, 2).contiguous(), 8_000, 16_000
             )[0].cpu().numpy()
             source_scores = [
                 score_extraction(source[: len(target)], target, other, 16_000)
