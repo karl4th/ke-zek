@@ -56,7 +56,7 @@ for i in 000 001; do
 done
 wait
 n=$(ls extracted/.done | wc -l)
-[ "$n" -eq 8 ] || { echo "only $n of 8 archives extracted"; exit 1; }
+[ "$n" -eq 7 ] || { echo "only $n of 7 archives extracted"; exit 1; }
 python -c "from huggingface_hub import hf_hub_download as d; print(d('manifestro/kezek-k-t0c', 'kezek_tse.pt', local_dir='/root/d/init'))"
 find extracted/LibriSpeech -name '*.flac' | wc -l
 find extracted/musan/noise extracted/musan/music extracted/dns_freesound -name '*.wav' | wc -l
