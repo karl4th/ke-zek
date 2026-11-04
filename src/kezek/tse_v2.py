@@ -13,6 +13,7 @@ import torch.nn.functional as F
 class ExtractionOutput:
     waveform: torch.Tensor
     activity_logits: torch.Tensor
+    mask_magnitude: torch.Tensor | None = None
 
 
 class BandBlock(nn.Module):
@@ -159,6 +160,7 @@ class TargetSpeakerExtractor(nn.Module):
 
         activity_logits = self.activity(hidden.mean(dim=1)).squeeze(-1)
         estimates = []
+        magnitudes = []
         for features, spectrum, head in zip(
             hidden.unbind(dim=1),
             torch.split(mix_spec, self.band_sizes, dim=1),
@@ -167,8 +169,10 @@ class TargetSpeakerExtractor(nn.Module):
         ):
             delta = head(features)
             real, imag = delta.chunk(2, dim=-1)
-            mask = torch.complex(2 * torch.sigmoid(real), torch.tanh(imag))
+            magnitude = 2 * torch.sigmoid(real)
+            mask = torch.complex(magnitude, torch.tanh(imag))
             estimates.append(spectrum * mask.transpose(1, 2))
+            magnitudes.append(magnitude.transpose(1, 2))
         target_spec = torch.cat(estimates, dim=1)
         target = torch.istft(
             target_spec,
@@ -177,4 +181,8 @@ class TargetSpeakerExtractor(nn.Module):
             window=self.window.to(dtype=mixture.dtype),
             length=mixture.shape[-1],
         )
-        return ExtractionOutput(waveform=target, activity_logits=activity_logits)
+        return ExtractionOutput(
+            waveform=target,
+            activity_logits=activity_logits,
+            mask_magnitude=torch.cat(magnitudes, dim=1),
+        )

@@ -104,7 +104,8 @@ class SpectralUNetExtractor(nn.Module):
         hidden = self.up2(torch.cat((F.interpolate(hidden, size=second.shape[-2:]), second), 1))
         hidden = self.up1(torch.cat((F.interpolate(hidden, size=first.shape[-2:]), first), 1))
         real, imag = self.mask(hidden).unbind(dim=1)
-        complex_mask = torch.complex(2 * real.sigmoid(), imag.tanh())
+        magnitude = 2 * real.sigmoid()
+        complex_mask = torch.complex(magnitude, imag.tanh())
         estimate = torch.istft(
             spectrum * complex_mask,
             self.n_fft,
@@ -113,4 +114,8 @@ class SpectralUNetExtractor(nn.Module):
             length=mixture.shape[-1],
         )
         activity_logits = self.activity(hidden.mean(dim=2)).squeeze(1)
-        return ExtractionOutput(waveform=estimate, activity_logits=activity_logits)
+        return ExtractionOutput(
+            waveform=estimate,
+            activity_logits=activity_logits,
+            mask_magnitude=magnitude,
+        )

@@ -95,3 +95,29 @@ def source_discriminative_loss(
     ) / 0.1
     labels = torch.zeros(len(logits), dtype=torch.long, device=logits.device)
     return F.cross_entropy(logits, labels), int(usable.sum())
+
+
+def mask_supervision_loss(
+    output: ExtractionOutput,
+    target: torch.Tensor,
+    other: torch.Tensor,
+    n_fft: int,
+    hop_length: int,
+) -> torch.Tensor:
+    """Fit the target's share of each time-frequency bin from isolated tracks."""
+    if output.mask_magnitude is None:
+        raise ValueError("Model output has no predicted magnitude mask")
+    window = torch.hann_window(n_fft, device=target.device, dtype=target.dtype)
+    target_mag = torch.stft(
+        target, n_fft, hop_length, window=window, return_complex=True
+    ).abs()
+    other_mag = torch.stft(
+        other, n_fft, hop_length, window=window, return_complex=True
+    ).abs()
+    combined = target_mag + other_mag
+    ideal = target_mag / combined.clamp_min(1e-8)
+    if output.mask_magnitude.shape != ideal.shape:
+        raise ValueError("Predicted and ideal mask shapes differ")
+    return ((output.mask_magnitude - ideal).abs() * combined).sum() / combined.sum().clamp_min(
+        1e-8
+    )

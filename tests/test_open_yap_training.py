@@ -12,7 +12,11 @@ pytest.importorskip("scipy")
 from kezek.open_yap import scan_conversations  # noqa: E402
 from kezek.open_yap_training import CrossPairWindows, OpenYapWindows, _separate_start  # noqa: E402
 from kezek.tse_v2 import TargetSpeakerExtractor  # noqa: E402
-from kezek.tse_v2_loss import extraction_loss, source_discriminative_loss  # noqa: E402
+from kezek.tse_v2_loss import (  # noqa: E402
+    extraction_loss,
+    mask_supervision_loss,
+    source_discriminative_loss,
+)
 
 
 def test_enrollment_never_overlaps_mixture():
@@ -153,3 +157,18 @@ def test_cross_pair_windows_use_different_speakers_and_keep_sum(tmp_path):
         assert sample["cross_pair"]
         assert sample["target_speaker_id"] != sample["other_speaker_id"]
         torch.testing.assert_close(sample["mixture"], sample["target"] + sample["other"])
+
+
+def test_mask_supervision_distinguishes_target_from_other():
+    model = TargetSpeakerExtractor(
+        n_fft=64, hop_length=16, bands=4, width=8, blocks=1, enrollment_tokens=4
+    )
+    target = torch.randn(1, 1024) * 0.1
+    other = torch.zeros_like(target)
+    output = model(target, torch.randn(1, 640) * 0.1)
+    correct = mask_supervision_loss(output, target, other, 64, 16)
+    wrong = mask_supervision_loss(output, other, target, 64, 16)
+    assert correct < 1e-6
+    assert wrong > 0.9
+    wrong.backward()
+    assert model.band_outputs[0].weight.grad is not None

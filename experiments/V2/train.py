@@ -24,7 +24,11 @@ from kezek.metrics import score_extraction
 from kezek.open_yap import check_speaker_disjoint, scan_conversations, split_conversations
 from kezek.open_yap_training import SAMPLE_RATE, CrossPairWindows, OpenYapWindows
 from kezek.tse_v2 import TargetSpeakerExtractor
-from kezek.tse_v2_loss import extraction_loss, source_discriminative_loss
+from kezek.tse_v2_loss import (
+    extraction_loss,
+    mask_supervision_loss,
+    source_discriminative_loss,
+)
 from kezek.tse_v2_unet import SpectralUNetExtractor
 
 
@@ -72,6 +76,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--speaker-contrastive-weight", type=float, default=0.0)
     parser.add_argument("--source-discriminative-weight", type=float, default=0.0)
     parser.add_argument("--cross-pair-probability", type=float, default=0.0)
+    parser.add_argument("--mask-supervision-weight", type=float, default=0.0)
     parser.add_argument("--conditioning", choices=("mean", "band_concat"), default="mean")
     parser.add_argument("--n-fft", type=int, default=512)
     parser.add_argument("--hop-length", type=int, default=128)
@@ -100,6 +105,8 @@ def parse() -> argparse.Namespace:
         parser.error("Speaker contrastive weight must be nonnegative")
     if args.source_discriminative_weight < 0:
         parser.error("Source discriminative weight must be nonnegative")
+    if args.mask_supervision_weight < 0:
+        parser.error("Mask supervision weight must be nonnegative")
     if args.speaker_contrastive_weight and args.architecture != "spectral_unet":
         parser.error("Speaker contrastive loss requires spectral_unet")
     return args
@@ -472,6 +479,12 @@ def main() -> None:
             output = model(mixture, enrollment)
             loss, parts = extraction_loss(output, target, other)
             parts["cross_pair_fraction"] = float(sample["cross_pair"].float().mean())
+            if args.mask_supervision_weight:
+                mask_loss = mask_supervision_loss(
+                    output, target, other, args.n_fft, args.hop_length
+                )
+                loss = loss + args.mask_supervision_weight * mask_loss
+                parts["mask_supervision_loss"] = float(mask_loss.detach())
             if args.paired_directions:
                 opposite_enrollment = sample["other_enrollment"].to(
                     args.device, non_blocking=True
