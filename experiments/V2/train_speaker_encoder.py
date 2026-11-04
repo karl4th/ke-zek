@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,8 +11,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchaudio.functional as AF
 from evaluate_sepformer import SPEAKER_REPO, _voice_score, trim_by_energy
 from train import git_state, select_splits, upload_checkpoint
+from train_sepformer import SOURCE_REPO, align_sources_to_mixture
 
 from kezek.open_yap import scan_conversations
 from kezek.open_yap_training import OpenYapWindows
@@ -36,6 +39,30 @@ def speaker_pair_loss(
         "negative_cosine": float(negative.mean().detach()),
         "pair_accuracy": float((positive > negative).float().mean().detach()),
     }
+
+
+def separated_pairs(
+    separator, mixture: torch.Tensor, target: torch.Tensor, other: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Use clean references to identify both frozen separator outputs for training."""
+    with torch.no_grad():
+        reduced_mix = AF.resample(mixture, 16_000, 8_000)
+        reduced_target = AF.resample(target, 16_000, 8_000)
+        reduced_other = AF.resample(other, 16_000, 8_000)
+        estimates, _ = align_sources_to_mixture(
+            separator.separate_batch(reduced_mix), reduced_mix
+        )
+        first, second = estimates[..., 0], estimates[..., 1]
+        direct = (first - reduced_target).square().mean(dim=-1)
+        direct += (second - reduced_other).square().mean(dim=-1)
+        swapped = (second - reduced_target).square().mean(dim=-1)
+        swapped += (first - reduced_other).square().mean(dim=-1)
+        use_second = swapped < direct
+        positive = torch.where(use_second[:, None], second, first)
+        negative = torch.where(use_second[:, None], first, second)
+        positive = AF.resample(positive, 8_000, 16_000)
+        negative = AF.resample(negative, 8_000, 16_000)
+    return positive, negative
 
 
 def evaluate(model, dataset: OpenYapWindows, device: str) -> dict[str, float]:
@@ -69,6 +96,7 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--split-manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--separator-checkpoint", type=Path)
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--workers", type=int, default=4)
@@ -100,6 +128,30 @@ def main() -> None:
         savedir=str(args.out.parent / "pretrained" / SPEAKER_REPO.replace("/", "_")),
         run_opts={"device": args.device},
     )
+    separator = None
+    separator_checksum = None
+    separator_step = None
+    if args.separator_checkpoint:
+        checksum = hashlib.sha256()
+        with args.separator_checkpoint.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                checksum.update(chunk)
+        separator_checksum = checksum.hexdigest()
+        separator_state = torch.load(
+            args.separator_checkpoint, map_location="cpu", weights_only=True
+        )
+        if separator_state["source_repo"] != SOURCE_REPO:
+            raise ValueError("Separator checkpoint repository does not match")
+        separator_step = separator_state["step"]
+        from speechbrain.inference.separation import SepformerSeparation
+
+        separator = SepformerSeparation.from_hparams(
+            source=SOURCE_REPO,
+            savedir=str(args.out.parent / "pretrained" / SOURCE_REPO.replace("/", "_")),
+            run_opts={"device": args.device},
+        )
+        separator.mods.load_state_dict(separator_state["model"])
+        separator.mods.eval()
     model.mods.eval()
     for parameter in model.mods.parameters():
         parameter.requires_grad_(False)
@@ -127,6 +179,8 @@ def main() -> None:
         "commit": commit,
         "speaker_repo": SPEAKER_REPO,
         "speaker_revision": model_revision,
+        "separator_checkpoint_sha256": separator_checksum,
+        "separator_step": separator_step,
         "split_manifest": str(args.split_manifest),
         "steps": args.steps,
         "batch_size": args.batch_size,
@@ -165,9 +219,15 @@ def main() -> None:
                 other.square().mean(dim=-1) >= 1e-6
             )
             if int(usable.sum()) >= 2:
+                positive, negative = target[usable], other[usable]
+                if separator is not None:
+                    positive, negative = separated_pairs(
+                        separator, sample["mixture"].to(args.device)[usable],
+                        positive, negative,
+                    )
                 encoder.train()
                 loss, metrics = speaker_pair_loss(
-                    model, enrollment[usable], target[usable], other[usable]
+                    model, enrollment[usable], positive, negative
                 )
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Nonfinite speaker loss at step {step}")
