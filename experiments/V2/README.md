@@ -1,5 +1,9 @@
 # Open Yap training run
 
+The selected full-run method and held-out evidence are in
+[`FULL_RUN_RECIPE.md`](FULL_RUN_RECIPE.md). The commands below describe the
+earlier extractor baseline used during the recipe search.
+
 Use an extracted Open Yap WAV delivery with this layout:
 
 ```text
