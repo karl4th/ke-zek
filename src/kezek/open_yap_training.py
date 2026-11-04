@@ -187,6 +187,57 @@ class OpenYapWindows(torch.utils.data.Dataset):
             "conversation_id": pair.conversation_id,
             "conversation_dir": str(pair.speaker_a_path.parent),
             "target_side": target_side,
+            "target_speaker_id": (pair.speaker_a_id, pair.speaker_b_id)[target_side],
+            "other_speaker_id": (pair.speaker_a_id, pair.speaker_b_id)[1 - target_side],
+            "cross_pair": False,
             "mixture_start_seconds": crop_start / rate,
             "enrollment_start_seconds": enrollment_start / rate,
         }
+
+
+class CrossPairWindows(torch.utils.data.Dataset):
+    """Create a controlled mixture from clean speakers in different conversations."""
+
+    def __init__(self, natural: OpenYapWindows, probability: float, seed: int) -> None:
+        if not 0 <= probability <= 1:
+            raise ValueError("Cross-pair probability must be between zero and one")
+        self.natural = natural
+        self.probability = probability
+        self.seed = seed
+
+    def __len__(self) -> int:
+        return len(self.natural)
+
+    def __getitem__(self, index: int) -> dict:
+        first = self.natural[index]
+        rng = np.random.default_rng([self.seed, index, 919])
+        if rng.random() >= self.probability:
+            return first
+        second = None
+        for _ in range(16):
+            candidate = self.natural[int(rng.integers(len(self.natural)))]
+            if (
+                candidate["conversation_id"] != first["conversation_id"]
+                and candidate["target_speaker_id"] != first["target_speaker_id"]
+                and float(candidate["target"].square().mean()) >= 1e-6
+            ):
+                second = candidate
+                break
+        if second is None or float(first["target"].square().mean()) < 1e-6:
+            return first
+        target = first["target"].clone()
+        other = second["target"].clone()
+        target = target * (0.05 / target.square().mean().sqrt())
+        other_level = 0.05 * 10 ** (float(rng.uniform(-5, 5)) / 20)
+        other = other * (other_level / other.square().mean().sqrt())
+        mixture = target + other
+        gain = min(1.0, 0.95 / max(float(mixture.abs().max()), 1e-6))
+        first.update(
+            target=target * gain,
+            other=other * gain,
+            mixture=mixture * gain,
+            other_enrollment=second["enrollment"],
+            other_speaker_id=second["target_speaker_id"],
+            cross_pair=True,
+        )
+        return first

@@ -22,7 +22,7 @@ import torch.nn.functional as F
 
 from kezek.metrics import score_extraction
 from kezek.open_yap import check_speaker_disjoint, scan_conversations, split_conversations
-from kezek.open_yap_training import SAMPLE_RATE, OpenYapWindows
+from kezek.open_yap_training import SAMPLE_RATE, CrossPairWindows, OpenYapWindows
 from kezek.tse_v2 import TargetSpeakerExtractor
 from kezek.tse_v2_loss import extraction_loss, source_discriminative_loss
 from kezek.tse_v2_unet import SpectralUNetExtractor
@@ -71,6 +71,7 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--architecture", choices=("band", "spectral_unet"), default="band")
     parser.add_argument("--speaker-contrastive-weight", type=float, default=0.0)
     parser.add_argument("--source-discriminative-weight", type=float, default=0.0)
+    parser.add_argument("--cross-pair-probability", type=float, default=0.0)
     parser.add_argument("--conditioning", choices=("mean", "band_concat"), default="mean")
     parser.add_argument("--n-fft", type=int, default=512)
     parser.add_argument("--hop-length", type=int, default=128)
@@ -90,6 +91,8 @@ def parse() -> argparse.Namespace:
         parser.error("Stop step must be between zero and total steps")
     if not 0 <= args.overlap_sampling <= 1:
         parser.error("Overlap sampling must be between zero and one")
+    if not 0 <= args.cross_pair_probability <= 1:
+        parser.error("Cross-pair probability must be between zero and one")
     if args.speaker_contrastive_weight < 0:
         parser.error("Speaker contrastive weight must be nonnegative")
     if args.source_discriminative_weight < 0:
@@ -385,6 +388,8 @@ def main() -> None:
         overlap_sampling=args.overlap_sampling,
         enrollment_selection=args.enrollment_selection,
     )
+    if args.cross_pair_probability:
+        train_set = CrossPairWindows(train_set, args.cross_pair_probability, args.seed + 2000)
     val_set = OpenYapWindows(
         val_pairs,
         args.val_examples,
@@ -451,6 +456,7 @@ def main() -> None:
             other = sample["other"].to(args.device, non_blocking=True)
             output = model(mixture, enrollment)
             loss, parts = extraction_loss(output, target, other)
+            parts["cross_pair_fraction"] = float(sample["cross_pair"].float().mean())
             if args.paired_directions:
                 opposite_enrollment = sample["other_enrollment"].to(
                     args.device, non_blocking=True

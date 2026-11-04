@@ -10,7 +10,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("scipy")
 
 from kezek.open_yap import scan_conversations  # noqa: E402
-from kezek.open_yap_training import OpenYapWindows, _separate_start  # noqa: E402
+from kezek.open_yap_training import CrossPairWindows, OpenYapWindows, _separate_start  # noqa: E402
 from kezek.tse_v2 import TargetSpeakerExtractor  # noqa: E402
 from kezek.tse_v2_loss import extraction_loss, source_discriminative_loss  # noqa: E402
 
@@ -127,3 +127,29 @@ def test_discriminative_loss_prefers_target_on_overlap():
     mixed.backward()
     assert estimate.grad is not None
     assert estimate.grad.abs().sum() > 0
+
+
+def test_cross_pair_windows_use_different_speakers_and_keep_sum(tmp_path):
+    rate, seconds = 16_000, 20
+    time = np.arange(rate * seconds) / rate
+    for index in range(2):
+        directory = tmp_path / "conversations" / f"conv_{index}"
+        directory.mkdir(parents=True)
+        (directory / "meta.json").write_text(
+            json.dumps({
+                "conversation_id": f"conv_{index}",
+                "speaker_a_id": f"a_{index}",
+                "speaker_b_id": f"b_{index}",
+            })
+        )
+        sf.write(directory / "speaker_a.wav", 0.1 * np.sin(2 * np.pi * 220 * time), rate)
+        sf.write(directory / "speaker_b.wav", 0.1 * np.sin(2 * np.pi * 330 * time), rate)
+    natural = OpenYapWindows(
+        scan_conversations(tmp_path), 20, seed=3, mixture_seconds=2, enrollment_seconds=3
+    )
+    mixed = CrossPairWindows(natural, probability=1.0, seed=9)
+    for index in range(10):
+        sample = mixed[index]
+        assert sample["cross_pair"]
+        assert sample["target_speaker_id"] != sample["other_speaker_id"]
+        torch.testing.assert_close(sample["mixture"], sample["target"] + sample["other"])
