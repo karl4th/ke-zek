@@ -127,6 +127,8 @@ def assign(
     max_run: int = 200,
     fade: int = 160,
     oracle: tuple[np.ndarray, np.ndarray] | None = None,
+    hint: np.ndarray | None = None,
+    hint_weight: float = 1.0,
 ) -> tuple[np.ndarray, dict]:
     """Target waveform from two separated streams; ``info`` describes the decision.
 
@@ -159,6 +161,16 @@ def assign(
     voiced = weight > 0
     thr = two_means_threshold(score[voiced], weight[voiced]) if voiced.any() else 0.0
     evidence = np.where(voiced, weight * (score - thr), 0.0)
+    if hint is not None:
+        # a target-conditioned extractor's output as frame-level voice evidence: is the run
+        # closer to the extractor's estimate of the target or to what it left in the mixture?
+        rest = mix - hint
+        for i, (s_, a_, b_) in enumerate(runs):
+            seg = streams[s_][a_ * FRAME : b_ * FRAME]
+            h, r = hint[a_ * FRAME : b_ * FRAME], rest[a_ * FRAME : b_ * FRAME]
+            c_h = float(seg @ h) / (np.linalg.norm(seg) * np.linalg.norm(h) + 1e-9)
+            c_r = float(seg @ r) / (np.linalg.norm(seg) * np.linalg.norm(r) + 1e-9)
+            evidence[i] += hint_weight * min((b_ - a_) * 0.01, 5.0) * (c_h - c_r)
 
     # components of runs linked by "different person" edges, with parity
     parent, parity = list(range(n)), [0] * n
@@ -204,7 +216,7 @@ def assign(
         return lab
 
     label = labels_from(evidence)
-    for _ in range(refine if voiced.sum() >= 2 else 0):
+    for _ in range(refine if voiced.sum() >= 2 and hint is None else 0):
         wt = weight * label
         wo = weight * ~label
         mu_t = enr * 2.0 + (wt[:, None] * emb).sum(0)
@@ -226,7 +238,7 @@ def assign(
     gated = 0
     long_runs = np.array([b - a >= min(gate_frames, max_run or gate_frames) for _, a, b in runs])
     long_runs &= voiced
-    if min_target_cos > -1 and long_runs.any():
+    if min_target_cos > -1 and long_runs.any() and hint is None:
         lt, lo = long_runs & label, long_runs & ~label
 
         def centroid(m):

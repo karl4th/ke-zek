@@ -60,13 +60,15 @@ def mono_long(model, mix, enr, d, device, win_s=4.0, hop_s=3.0, batch=16):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
-    ap.add_argument("--method", choices=("mixture", "mono", "block", "oracle_block"), required=True)
+    ap.add_argument("--method", choices=("mixture", "mono", "block", "oracle_block", "hybrid"), required=True)
     ap.add_argument("--model", default="")
     ap.add_argument("--arch", default="kezek")
     ap.add_argument("--no-conversation", action="store_true", help="block: voice evidence only")
     ap.add_argument("--refine", type=int, default=5, help="block: centroid iterations (0 = off)")
     ap.add_argument("--rel-db", type=float, default=45.0, help="block: run detection level")
     ap.add_argument("--min-target-cos", type=float, default=0.35, help="block: absolute gate")
+    ap.add_argument("--tse-model", default="", help="hybrid: KezekTSE state dict for the hint")
+    ap.add_argument("--hint-weight", type=float, default=1.0)
     ap.add_argument("--max-run", type=int, default=200, help="block: longest run, frames (0 = off)")
     ap.add_argument("--oracle-assign", action="store_true", help="block: label runs by the clean tracks")
     ap.add_argument("--same-cos", type=float, default=0.5, help="block: one-voice check")
@@ -91,9 +93,12 @@ def main():
     if a.method == "mono":
         model = Extractor(a.arch).to(dev).eval()
         model.net.load_state_dict(torch.load(a.model, map_location="cpu"))
-    elif a.method == "block" and a.model.startswith("speechbrain/"):
+    if a.method == "hybrid":
+        tse = Extractor("kezek").to(dev).eval()
+        tse.net.load_state_dict(torch.load(a.tse_model, map_location="cpu"))
+    if a.method in ("block", "hybrid") and a.model.startswith("speechbrain/"):
         model = PretrainedSep(a.model, dev).eval()
-    elif a.method == "block":
+    elif a.method in ("block", "hybrid"):
         model = (BandSep() if a.arch == "band" else SepTasNet()).to(dev).eval()
         model.load_state_dict(torch.load(a.model, map_location="cpu"))
     rng = np.random.default_rng(a.seed)
@@ -137,6 +142,7 @@ def main():
             elif a.method == "mono":
                 est = mono_long(model, mix, enr, d, dev)
             else:
+                hint = mono_long(tse, mix, enr, d, dev) if a.method == "hybrid" else None
                 if a.method == "oracle_block":  # the clean tracks stand in for the separator
                     flip = np.random.default_rng([a.seed, used]).random() < 0.5
                     streams = np.stack([o, t]) if flip else np.stack([t, o])
@@ -146,6 +152,7 @@ def main():
                     streams, mix, d, se, dev, use_conversation=not a.no_conversation,
                     refine=a.refine, rel_db=a.rel_db, min_target_cos=a.min_target_cos,
                     same_cos=a.same_cos, max_run=a.max_run, oracle=(t, o) if a.oracle_assign else None,
+                    hint=hint, hint_weight=a.hint_weight,
                 )
             m = np.repeat(at, FRAME)
             l_ref = float(np.mean(np.float64(t[m]) ** 2)) if m.any() else float(np.mean(t**2)) + 1e-12
@@ -167,7 +174,8 @@ def main():
     out = {
         "method": a.method, "model": a.model, "split": a.split, "excerpts": len(scores),
         "conversation_term": not a.no_conversation, "refine": a.refine, "rel_db": a.rel_db,
-        "min_target_cos": a.min_target_cos, "same_cos": a.same_cos, "max_run": a.max_run, "excerpt_s": a.excerpt_s,
+        "min_target_cos": a.min_target_cos, "same_cos": a.same_cos, "max_run": a.max_run,
+        "tse_model": a.tse_model, "hint_weight": a.hint_weight, "excerpt_s": a.excerpt_s,
         "enroll_s": a.enroll_s, **metrics.aggregate(scores),
     }
     out["ci"] = metrics.bootstrap_ci(scores, n_boot=500)
