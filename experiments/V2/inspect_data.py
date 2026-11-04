@@ -110,7 +110,13 @@ def main() -> None:
     for name, group, seed in (("train", train, args.seed), ("val", val, args.seed + 10_000)):
         dataset = OpenYapWindows(group, args.samples, seed)
         examples = [inspect_sample(dataset[index]) for index in range(args.samples)]
-        report["splits"][name] = {"summary": summarize(examples), "examples": examples}
+        report["splits"][name] = {
+            "summary": summarize(examples),
+            "examples": [
+                {key: value if np.isfinite(value) else None for key, value in example.items()}
+                for example in examples
+            ],
+        }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, allow_nan=False))
