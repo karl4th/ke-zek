@@ -128,6 +128,7 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--warmup", type=int, default=1000)
     ap.add_argument("--p-overlap", type=float, default=0.5)
+    ap.add_argument("--crop-s", type=float, default=4.0, help="training window, seconds")
     ap.add_argument("--sir-jitter-db", type=float, default=3.0)
     ap.add_argument("--max-train-conversations", type=int, default=0)
     ap.add_argument("--eval-every", type=int, default=2500)
@@ -163,7 +164,8 @@ def main():
     start = ckpt["step"] if ckpt else 0
 
     train_set = RealWindows(
-        train, a.steps * a.bs, seed=a.seed, p_overlap=a.p_overlap, sir_jitter_db=a.sir_jitter_db
+        train, a.steps * a.bs, seed=a.seed, p_overlap=a.p_overlap, sir_jitter_db=a.sir_jitter_db,
+        crop_s=a.crop_s,
     )
     dl = torch.utils.data.DataLoader(
         torch.utils.data.Subset(train_set, range(start * a.bs, len(train_set))),
