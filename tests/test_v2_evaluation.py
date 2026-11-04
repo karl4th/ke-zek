@@ -10,6 +10,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("soundfile")
 pytest.importorskip("scipy")
 
+from kezek.metrics import regions, score_extraction  # noqa: E402
 from kezek.tse_v2 import TargetSpeakerExtractor  # noqa: E402
 
 
@@ -35,3 +36,14 @@ def test_evaluation_writes_audio_and_scores_overlap(tmp_path):
     scores = module.evaluate(model, [sample], "cpu", tmp_path, demo_count=1)
     assert abs(scores["sisdri_overlap"]) < 1e-3
     assert len(list(tmp_path.glob("*.wav"))) == 3
+
+
+def test_near_silent_track_is_not_counted_as_speech():
+    time = np.arange(16_000) / 16_000
+    target = (2e-5 * np.sin(2 * np.pi * 220 * time)).astype("float32")
+    other = (0.1 * np.sin(2 * np.pi * 440 * time)).astype("float32")
+    reg = regions(target, other, 16_000)
+    assert not reg.overlap.any()
+    assert reg.absent.all()
+    score = score_extraction(target + other, target, other, 16_000)
+    assert abs(score.residual_db) < 0.01

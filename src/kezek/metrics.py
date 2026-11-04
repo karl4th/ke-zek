@@ -59,10 +59,16 @@ class Regions:
         }
 
 
-def regions(target: np.ndarray, interferer: np.ndarray, sr: int, rel_db: float = -40.0):
-    """Per-frame overlap / solo / absent masks from the clean references."""
-    t_thr = threshold_db(target, sr, rel_db)
-    i_thr = threshold_db(interferer, sr, rel_db)
+def regions(
+    target: np.ndarray,
+    interferer: np.ndarray,
+    sr: int,
+    rel_db: float = -40.0,
+    abs_floor_db: float = -60.0,
+):
+    """Per-frame regions with a floor that rejects near-silent track noise."""
+    t_thr = max(threshold_db(target, sr, rel_db), abs_floor_db)
+    i_thr = max(threshold_db(interferer, sr, rel_db), abs_floor_db)
     t = energy_vad(target, sr, abs_threshold_db=t_thr)
     i = energy_vad(interferer, sr, abs_threshold_db=i_thr)
     return Regions(overlap=t & i, solo=t & ~i, absent=~t & i, target_threshold_db=t_thr)
