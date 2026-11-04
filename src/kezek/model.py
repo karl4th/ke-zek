@@ -23,7 +23,10 @@ class SpeakerEncoder(nn.Module):
     dim = 192
 
     def __init__(
-        self, source: str = "speechbrain/spkrec-ecapa-voxceleb", savedir: str | None = None, device: str = "cuda"
+        self,
+        source: str = "speechbrain/spkrec-ecapa-voxceleb",
+        savedir: str | None = None,
+        device: str = "cuda",
     ):
         super().__init__()
         from speechbrain.inference.speaker import EncoderClassifier
@@ -60,7 +63,7 @@ class GlobalLN(nn.Module):
 
 
 class FiLMBlock(nn.Module):
-    """TCN block: 1x1 -> PReLU/norm -> FiLM(d) -> dilated depthwise -> PReLU/norm -> 1x1 + residual."""
+    """TCN block with FiLM conditioning and a dilated depthwise convolution."""
 
     def __init__(self, bn: int, hid: int, kernel: int, dilation: int, cond: int):
         super().__init__()
@@ -134,7 +137,11 @@ def si_sdr_loss(est: torch.Tensor, ref: torch.Tensor, eps: float = 1e-8) -> torc
 
 
 def kezek_loss(
-    est: torch.Tensor, ref: torch.Tensor, d: torch.Tensor, spk_enc: SpeakerEncoder, spk_weight: float = 0.1
+    est: torch.Tensor,
+    ref: torch.Tensor,
+    d: torch.Tensor,
+    spk_enc: SpeakerEncoder,
+    spk_weight: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     sisdr = si_sdr_loss(est, ref).mean()
     if spk_weight > 0:
