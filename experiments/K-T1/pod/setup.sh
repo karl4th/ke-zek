@@ -18,9 +18,9 @@ pip install -q -c constraints.txt --no-deps -e /workspace/ke-zek
 python -c "import torch; torch.zeros(1).cuda(); print('GPU OK', torch.cuda.get_device_name(0), torch.__version__)"
 ffmpeg -hide_banner -encoders | grep -E "libmp3lame|libopus"
 
-# Every archive streams straight into tar, all of them at once: no archive is kept on disk and the
-# network never waits for an extraction. A finished archive leaves a marker in extracted/.done, so
-# a second run skips it; a broken stream is fetched again from the start (tar overwrites files).
+# The DNS archives stream straight into tar while the openslr ones download, so the network never
+# waits for an extraction. A finished archive leaves a marker in extracted/.done, so a second run
+# skips it; a broken stream is fetched again from the start (tar overwrites files).
 apt-get install -y -qq pigz lbzip2 > /dev/null
 mkdir -p extracted/.done extracted/dns_freesound
 stream() {  # url, decompressor, target dir
@@ -37,16 +37,18 @@ stream() {  # url, decompressor, target dir
   done
   return 1
 }
+fetch() {  # url, extract command: openslr gives ~5 MB/s per connection, so 16 connections to a file
+  local url=$1 name=$(basename "$1"); shift
+  [ -e extracted/.done/$name ] && return 0
+  aria2c -q -x16 -s16 -d dl "$url" && "$@" dl/$name && rm -f dl/$name && touch extracted/.done/$name
+}
+tgz() { pigz -dc "$1" | tar -x -C extracted; }
+zp() { unzip -q -o "$1" -d extracted; }
 set -o pipefail
 O=https://openslr.elda.org/resources
-for f in dev-clean train-clean-100 train-clean-360; do
-  stream $O/12/$f.tar.gz pigz extracted &
-done
-stream $O/17/musan.tar.gz pigz extracted &
-# a zip cannot be streamed; RIRS_NOISES is small
-( [ -e extracted/.done/rirs_noises.zip ] || { aria2c -q -x16 -s16 -d dl $O/28/rirs_noises.zip \
-  && unzip -q -o dl/rirs_noises.zip -d extracted && rm -f dl/rirs_noises.zip \
-  && touch extracted/.done/rirs_noises.zip; } ) &
+# one archive at a time: train-clean-360 and its extraction together nearly fill the 80 GB disk
+( fetch $O/28/rirs_noises.zip zp && fetch $O/17/musan.tar.gz tgz \
+  && for f in dev-clean train-clean-100 train-clean-360; do fetch $O/12/$f.tar.gz tgz || exit 1; done ) &
 # DNS Challenge noise: the Freesound part only (CC0). AudioSet and DEMAND are not used.
 DNS=https://dnschallengepublic.blob.core.windows.net/dns5archive/V5_training_dataset/noise_fullband
 for i in 000 001; do
