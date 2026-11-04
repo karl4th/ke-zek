@@ -114,6 +114,7 @@ def assign(
     gate_frames: int = 200,
     same_cos: float = 0.5,
     fade: int = 160,
+    oracle: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Target waveform from two separated streams; ``info`` describes the decision.
 
@@ -221,6 +222,13 @@ def assign(
             sign = 1.0 if float(centroid(long_runs) @ enr) >= min_target_cos else -1.0
             label = labels_from(np.where(long_runs, sign * 1e3 * weight, evidence))
             gated = 1 if sign > 0 else -1
+    if oracle is not None:  # diagnostics: each run goes to whichever clean track it is closer to
+        t_ref, o_ref = oracle
+        for i, (s_, a_, b_) in enumerate(runs):
+            seg = streams[s_][a_ * FRAME : b_ * FRAME]
+            label[i] = float(np.sum((seg - t_ref[a_ * FRAME : b_ * FRAME]) ** 2)) < float(
+                np.sum((seg - o_ref[a_ * FRAME : b_ * FRAME]) ** 2)
+            )
     out = np.zeros(len(mix), np.float32)
     ramp = np.linspace(0, 1, fade, dtype=np.float32)
     for (s, a, b), t in zip(runs, label, strict=True):

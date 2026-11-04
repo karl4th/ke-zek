@@ -67,6 +67,7 @@ def main():
     ap.add_argument("--refine", type=int, default=5, help="block: centroid iterations (0 = off)")
     ap.add_argument("--rel-db", type=float, default=45.0, help="block: run detection level")
     ap.add_argument("--min-target-cos", type=float, default=0.35, help="block: absolute gate")
+    ap.add_argument("--oracle-assign", action="store_true", help="block: label runs by the clean tracks")
     ap.add_argument("--same-cos", type=float, default=0.5, help="block: one-voice check")
     ap.add_argument("--split", choices=("val", "test"), default="val")
     ap.add_argument("--final", action="store_true")
@@ -143,7 +144,7 @@ def main():
                 est, info = assign(
                     streams, mix, d, se, dev, use_conversation=not a.no_conversation,
                     refine=a.refine, rel_db=a.rel_db, min_target_cos=a.min_target_cos,
-                    same_cos=a.same_cos,
+                    same_cos=a.same_cos, oracle=(t, o) if a.oracle_assign else None,
                 )
             m = np.repeat(at, FRAME)
             l_ref = float(np.mean(np.float64(t[m]) ** 2)) if m.any() else float(np.mean(t**2)) + 1e-12
