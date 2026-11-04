@@ -70,7 +70,7 @@ def main():
     ap.add_argument("--tse-model", default="", help="hybrid: KezekTSE state dict for the hint")
     ap.add_argument("--hint-weight", type=float, default=1.0)
     ap.add_argument("--max-run", type=int, default=200, help="block: longest run, frames (0 = off)")
-    ap.add_argument("--cross-db", type=float, default=20.0, help="block: residual suppression (0 = off)")
+    ap.add_argument("--cross-db", type=float, default=0.0, help="block: residual suppression (0 = off)")
     ap.add_argument("--diagnose", action="store_true", help="block: save per-run decisions")
     ap.add_argument("--oracle-assign", action="store_true", help="block: label runs by the clean tracks")
     ap.add_argument("--same-cos", type=float, default=0.5, help="block: one-voice check")

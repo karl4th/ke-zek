@@ -32,8 +32,10 @@ run r1 --method mono --model "$tse"
 [[ -e $runs/r5_kt0c_state_dual/kezek_tse.pt ]] && run r5_dual --method mono \
   --model "$runs/r5_kt0c_state_dual/kezek_tse.pt"
 run block --method block --model "$sep"
+run block_cross15 --method block --model "$sep" --cross-db 15
 run block_voice --method block --model "$sep" --no-conversation
 run hybrid --method hybrid --model "$sep" --tse-model "$tse"
+run hybrid_cross15 --method hybrid --model "$sep" --tse-model "$tse" --cross-db 15
 run hybrid_voice --method hybrid --model "$sep" --tse-model "$tse" --no-conversation
 run oracle_block --method oracle_block
 run oracle_block_voice --method oracle_block --no-conversation

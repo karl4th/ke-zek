@@ -139,7 +139,7 @@ def assign(
     gate_frames: int = 200,
     same_cos: float = 0.5,
     max_run: int = 200,
-    cross_db: float = 20.0,
+    cross_db: float = 0.0,
     fade: int = 160,
     oracle: tuple[np.ndarray, np.ndarray] | None = None,
     hint: np.ndarray | None = None,
