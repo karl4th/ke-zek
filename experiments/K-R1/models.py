@@ -69,6 +69,30 @@ class SepTasNet(torch.nn.Module):
         return y.view(mix.shape[0], 2, -1)[..., :T]
 
 
+class PretrainedSep(torch.nn.Module):
+    """A public SpeechBrain separator as the block's first stage: mix [B, T] -> [B, 2, T].
+    8 kHz models get a resampled input and their output resampled back to 16 kHz."""
+
+    def __init__(self, source: str, device: str, savedir: str = "pretrained"):
+        super().__init__()
+        import torchaudio.functional as AF
+        from speechbrain.inference.separation import SepformerSeparation
+
+        self.AF = AF
+        self.sep = SepformerSeparation.from_hparams(
+            source=source, savedir=f"{savedir}/{source.split('/')[-1]}", run_opts={"device": device}
+        )
+        self.rate = int(self.sep.hparams.sample_rate)
+
+    def forward(self, mix: torch.Tensor) -> torch.Tensor:
+        x = mix if self.rate == 16_000 else self.AF.resample(mix, 16_000, self.rate)
+        y = self.sep.separate_batch(x).transpose(1, 2)
+        if self.rate != 16_000:
+            y = self.AF.resample(y, self.rate, 16_000)
+        n = mix.shape[-1]
+        return torch.nn.functional.pad(y, (0, max(0, n - y.shape[-1])))[..., :n]
+
+
 class Mixture(torch.nn.Module):
     """The unprocessed input, as a reference point."""
 

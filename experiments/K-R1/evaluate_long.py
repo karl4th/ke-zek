@@ -25,7 +25,7 @@ import torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from block import assign, separate_long  # noqa: E402
-from models import Extractor, SepTasNet  # noqa: E402
+from models import Extractor, PretrainedSep, SepTasNet  # noqa: E402
 from rdata import _Conversation, _runs, disputed_frames, splits  # noqa: E402
 
 from kezek import metrics  # noqa: E402
@@ -89,6 +89,8 @@ def main():
     if a.method == "mono":
         model = Extractor(a.arch).to(dev).eval()
         model.net.load_state_dict(torch.load(a.model, map_location="cpu"))
+    elif a.method == "block" and a.model.startswith("speechbrain/"):
+        model = PretrainedSep(a.model, dev).eval()
     elif a.method == "block":
         model = SepTasNet().to(dev).eval()
         model.load_state_dict(torch.load(a.model, map_location="cpu"))
