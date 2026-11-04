@@ -193,7 +193,8 @@ def short_overlap_turn_score(
     directory = Path(sample["conversation_dir"])
     side = "ab"[sample["target_side"]]
     target_words = transcript_words(directory / f"speaker_{side}_transcript.json")
-    other_words = transcript_words(directory / f"speaker_{'b' if side == 'a' else 'a'}_transcript.json")
+    other_side = "b" if side == "a" else "a"
+    other_words = transcript_words(directory / f"speaker_{other_side}_transcript.json")
     groups: list[tuple[float, float]] = []
     for start, end in target_words:
         if groups and start - groups[-1][1] <= 0.3:
@@ -425,7 +426,9 @@ def main() -> None:
                         opposite_output, other[usable], target[usable]
                     )
                     loss = 0.5 * (loss + opposite_loss)
-                    parts.update({f"opposite_{key}": value for key, value in opposite_parts.items()})
+                    parts.update(
+                        {f"opposite_{key}": value for key, value in opposite_parts.items()}
+                    )
                     parts["paired_examples"] = int(usable.sum())
                 else:
                     parts["paired_examples"] = 0
