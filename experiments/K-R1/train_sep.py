@@ -107,6 +107,8 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--amp", action="store_true")
+    ap.add_argument("--crop-s", type=float, default=4.0, help="training window, seconds")
+    ap.add_argument("--init-sep", default="", help="start from a separator state dict (sep.pt)")
     ap.add_argument("--resume", action="store_true")
     a = ap.parse_args()
     dev = "cuda"
@@ -120,7 +122,9 @@ def main():
     ckpt_path = f"{a.out}/last.pt"
     ckpt = torch.load(ckpt_path, map_location="cpu") if a.resume and os.path.exists(ckpt_path) else None
     start = ckpt["step"] if ckpt else 0
-    ds = RealWindows(train, a.steps * a.bs, seed=a.seed, p_overlap=0.5, sir_jitter_db=3.0)
+    ds = RealWindows(
+        train, a.steps * a.bs, seed=a.seed, p_overlap=0.5, sir_jitter_db=3.0, crop_s=a.crop_s
+    )
     dl = torch.utils.data.DataLoader(
         torch.utils.data.Subset(ds, range(start * a.bs, len(ds))), batch_size=a.bs,
         num_workers=a.workers, collate_fn=collate, drop_last=True, prefetch_factor=4,
@@ -138,6 +142,8 @@ def main():
             if a.flip_init:
                 model.net.dec.weight.neg_()
             model.init_masks_from_net()
+    if a.init_sep:
+        model.load_state_dict(torch.load(a.init_sep, map_location="cpu"))
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_lambda(s, a.warmup, a.steps))
     log = []

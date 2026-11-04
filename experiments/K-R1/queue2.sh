@@ -24,6 +24,8 @@ train() {  # script, name, steps, extra arguments
 kt0c=(--init "$init/kezek-k-t0c/kezek_tse.pt" --flip-init)
 train train_sep.py s1_sep_kt0c "$steps" "${kt0c[@]}" --lr 2e-4 --amp --stop-at 15000
 train train.py r1_kt0c_state "$steps" "${kt0c[@]}" --lr 1e-4 --amp
+train train_sep.py s3_sep_kt0c_12s 10000 --init-sep "$runs/s1_sep_kt0c/sep.pt" --crop-s 12 --bs 4 \
+  --lr 1e-4 --warmup 500 --amp
 train train.py r5_kt0c_state_dual "$short" "${kt0c[@]}" --lr 1e-4 --dual 0.3 --amp
 train train_sep.py s2_sep_band "$steps" --arch band --lr 5e-4 --warmup 2000 --amp
 train train.py r2_scratch_state "$short" --lr 1e-3 --warmup 2000 --amp
