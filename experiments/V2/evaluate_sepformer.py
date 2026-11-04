@@ -152,6 +152,7 @@ def main() -> None:
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
     parser.add_argument("--speaker-repo", default=SPEAKER_REPO)
+    parser.add_argument("--speaker-checkpoint", type=Path)
     parser.add_argument("--separator-checkpoint", type=Path)
     parser.add_argument("--selector-checkpoint", type=Path)
     parser.add_argument("--split", choices=("val", "test"), default="val")
@@ -213,6 +214,19 @@ def main() -> None:
         savedir=str(root / "pretrained" / args.speaker_repo.replace("/", "_")),
         run_opts={"device": args.device},
     )
+    speaker_checkpoint_sha256 = None
+    speaker_checkpoint_step = None
+    if args.speaker_checkpoint:
+        checksum = hashlib.sha256()
+        with args.speaker_checkpoint.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                checksum.update(chunk)
+        speaker_checkpoint_sha256 = checksum.hexdigest()
+        speaker_state = torch.load(args.speaker_checkpoint, map_location="cpu", weights_only=True)
+        if speaker_state["speaker_repo"] != args.speaker_repo:
+            raise ValueError("Speaker checkpoint repository does not match")
+        classifier.mods.embedding_model.load_state_dict(speaker_state["model"])
+        speaker_checkpoint_step = speaker_state["step"]
     if selector_state and selector_state["config"]["speaker_revision"] != speaker_revision:
         raise ValueError("Selector was trained for another speaker encoder revision")
     if selector_state and (
@@ -241,6 +255,8 @@ def main() -> None:
         "selector_method": selector_state["method"] if selector_state else "cosine",
         "speaker_encoder": args.speaker_repo,
         "speaker_revision": speaker_revision,
+        "speaker_checkpoint_sha256": speaker_checkpoint_sha256,
+        "speaker_checkpoint_step": speaker_checkpoint_step,
         "split_manifest": str(args.split_manifest),
         "split": args.split,
         "examples": args.examples,
