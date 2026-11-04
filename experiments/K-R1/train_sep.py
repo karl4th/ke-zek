@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import tracker  # noqa: E402
 from models import BandSep, SepTasNet  # noqa: E402
 from rdata import RealWindows, collate, split_ids, splits  # noqa: E402
 
@@ -111,6 +112,7 @@ def main():
     ap.add_argument("--init-sep", default="", help="start from a separator state dict (sep.pt)")
     ap.add_argument("--resume", action="store_true")
     a = ap.parse_args()
+    name, tags = os.path.basename(a.out.rstrip("/")), ["separator", a.arch]
     dev = "cuda"
     os.makedirs(a.out, exist_ok=True)
     torch.manual_seed(a.seed)
@@ -160,11 +162,17 @@ def main():
         print(f"EVAL step {step}: " + json.dumps({f"{n}/{k}": round(m[f"{n}/{k}"], 3) for n in val_sets for k in keep}), flush=True)
         log.append({"step": step, **m})
         json.dump(log, open(f"{a.out}/eval_log.json", "w"), indent=1)
+        tracker.log(globals().get("_run"), {f"val/{k}": v for k, v in m.items()}, step)
 
     if start == 0:
         run_eval(0)
+    batches = iter(dl)
+    run = tracker.init(name, {**vars(a)}, tags, a.steps)
+    globals()["_run"] = run
+    for e in log:
+        tracker.log(run, {f"val/{k}": v for k, v in e.items() if k != "step"}, e["step"])
     t0, last = time.time(), min(a.steps, a.stop_at or a.steps)
-    for step, b in enumerate(dl, start + 1):
+    for step, b in enumerate(batches, start + 1):
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=a.amp):
             y = model(b["mix"].to(dev, non_blocking=True))
         loss = pit(y.float(), b, dev)[0].mean()
@@ -176,6 +184,8 @@ def main():
         opt.step()
         opt.zero_grad(set_to_none=True)
         sched.step()
+        if step % 50 == 0:
+            tracker.log(run, {"train/loss": loss.item()}, step)
         if step % 200 == 0 or step <= 3:
             el = time.time() - t0
             print(f"step {step:6d} loss {loss.item():8.3f} {(step - start) / max(el, 1e-6):.2f} it/s", flush=True)
@@ -190,6 +200,7 @@ def main():
             os.replace(f"{ckpt_path}.tmp", ckpt_path)
         if step >= last:
             break
+    tracker.finish(run)
     print("TRAINING DONE", flush=True)
 
 

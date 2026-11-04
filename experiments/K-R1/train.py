@@ -24,6 +24,7 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import tracker  # noqa: E402
 from models import ARCHS, Extractor  # noqa: E402
 from rdata import RealWindows, collate, split_ids, splits  # noqa: E402
 from validate import validate  # noqa: E402
@@ -140,6 +141,7 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--amp", action="store_true", help="bf16 autocast for the extractor forward")
     a = ap.parse_args()
+    name, tags = os.path.basename(a.out.rstrip("/")), [a.arch, a.loss]
 
     os.makedirs(a.out, exist_ok=True)
     torch.manual_seed(a.seed)
@@ -215,6 +217,7 @@ def main():
         print(f"EVAL step {step}: {json.dumps(short)}", flush=True)
         log.append({"step": step, **m})
         json.dump(log, open(f"{a.out}/eval_log.json", "w"), indent=1)
+        tracker.log(globals().get("_run"), {f"val/{k}": v for k, v in m.items()}, step)
         return m
 
     if start == 0:
@@ -229,10 +232,15 @@ def main():
             )
         return sisdr_only(est, ref, act)
 
+    batches = iter(dl)  # fork the loader workers before the tracker starts
+    run = tracker.init(name, {**vars(a), "manifest": manifest}, tags, a.steps)
+    globals()["_run"] = run
+    for e in log:
+        tracker.log(run, {f"val/{k}": v for k, v in e.items() if k != "step"}, e["step"])
     model.train()
     t0 = time.time()
     last = min(a.steps, a.stop_at or a.steps)
-    for step, b in enumerate(dl, start + 1):
+    for step, b in enumerate(batches, start + 1):
         mix, clean = b["mix"].to(dev, non_blocking=True), b["clean"].to(dev, non_blocking=True)
         enr = b["enr_t"].to(dev, non_blocking=True)
         with torch.no_grad():
@@ -263,6 +271,8 @@ def main():
         opt.step()
         opt.zero_grad(set_to_none=True)
         sched.step()
+        if step % 50 == 0:
+            tracker.log(run, {"train/loss": loss.item(), **{f"train/{k}": v for k, v in parts.items()}}, step)
         if step % 200 == 0 or step <= 5:
             el = time.time() - t0
             print(
@@ -287,6 +297,7 @@ def main():
             model.train()
         if step >= last:
             break
+    tracker.finish(run)
     print("TRAINING DONE", flush=True)
 
 
