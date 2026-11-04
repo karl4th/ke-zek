@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 
@@ -20,6 +21,13 @@ from kezek.open_yap_training import OpenYapWindows
 
 SEPARATOR_REPO = "speechbrain/sepformer-wsj02mix"
 SPEAKER_REPO = "speechbrain/spkrec-ecapa-voxceleb"
+
+
+def _resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    if source_rate == target_rate:
+        return audio
+    divisor = math.gcd(source_rate, target_rate)
+    return resample_poly(audio, target_rate // divisor, source_rate // divisor).astype("float32")
 
 
 def _fit_length(audio: np.ndarray, length: int) -> np.ndarray:
@@ -47,6 +55,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--examples", type=int, default=128)
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
+    parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-tracker", action="store_true")
     args = parser.parse_args()
@@ -62,13 +71,13 @@ def main() -> None:
     from speechbrain.inference.separation import SepformerSeparation
 
     api = HfApi()
-    separator_revision = api.model_info(SEPARATOR_REPO).sha
+    separator_revision = api.model_info(args.separator_repo).sha
     speaker_revision = api.model_info(SPEAKER_REPO).sha
     root = args.out.parent
     root.mkdir(parents=True, exist_ok=True)
     separator = SepformerSeparation.from_hparams(
-        source=SEPARATOR_REPO,
-        savedir=str(root / "pretrained" / "sepformer"),
+        source=args.separator_repo,
+        savedir=str(root / "pretrained" / args.separator_repo.replace("/", "_")),
         run_opts={"device": args.device},
     )
     classifier = EncoderClassifier.from_hparams(
@@ -76,14 +85,16 @@ def main() -> None:
         savedir=str(root / "pretrained" / "ecapa"),
         run_opts={"device": args.device},
     )
+    separator_rate = int(separator.hparams.sample_rate)
     _, val_pairs, _ = select_splits(scan_conversations(args.data_root), args.split_manifest, 42)
     dataset = OpenYapWindows(val_pairs, args.examples, seed=10_042)
     commit, dirty = git_state()
     config = {
         "commit": commit,
         "dirty": dirty,
-        "separator": SEPARATOR_REPO,
+        "separator": args.separator_repo,
         "separator_revision": separator_revision,
+        "separator_rate": separator_rate,
         "speaker_encoder": SPEAKER_REPO,
         "speaker_revision": speaker_revision,
         "split_manifest": str(args.split_manifest),
@@ -116,12 +127,12 @@ def main() -> None:
                 mixture = sample["mixture"].numpy()
                 target = sample["target"].numpy()
                 other = sample["other"].numpy()
-                mixture_8k = resample_poly(mixture, 1, 2).astype("float32")
-                sources_8k = separator.separate_batch(
-                    torch.from_numpy(mixture_8k)[None].to(args.device)
+                separator_input = _resample(mixture, 16_000, separator_rate)
+                separated = separator.separate_batch(
+                    torch.from_numpy(separator_input)[None].to(args.device)
                 )[0].cpu().numpy()
                 sources = [
-                    _fit_length(resample_poly(sources_8k[:, side], 2, 1), len(mixture))
+                    _fit_length(_resample(separated[:, side], separator_rate, 16_000), len(mixture))
                     for side in range(2)
                 ]
                 reconstruction = sources[0] + sources[1]
