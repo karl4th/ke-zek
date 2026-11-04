@@ -110,6 +110,7 @@ def assign(
     min_overlap: int = 10,
     rel_db: float = 35.0,
     refine: int = 5,
+    min_target_cos: float = 0.35,
     fade: int = 160,
 ) -> tuple[np.ndarray, dict]:
     """Target waveform from two separated streams; ``info`` describes the decision.
@@ -197,6 +198,22 @@ def assign(
         if (new == label).all():
             break
         label = new
+    # Two clusters always exist, even when the target says nothing in this stretch. A component
+    # stays with the target only if its target-side voiced runs match the enrollment in absolute
+    # terms (ECAPA cosine of runs >= 2 s: same person median 0.62, other person p95 0.26).
+    gated = 0
+    if min_target_cos > -1:
+        comps: dict[int, list[int]] = {}
+        for i, (r, _) in enumerate(roots):
+            comps.setdefault(r, []).append(i)
+        for members in comps.values():
+            tv = [i for i in members if label[i] and voiced[i]]
+            if not tv:
+                continue
+            w = weight[tv]
+            if float(np.average(score[tv], weights=w)) < min_target_cos:
+                label[members] = False
+                gated += 1
     out = np.zeros(len(mix), np.float32)
     ramp = np.linspace(0, 1, fade, dtype=np.float32)
     for (s, a, b), t in zip(runs, label, strict=True):
@@ -216,5 +233,6 @@ def assign(
         "conflicts": conflicts,
         "threshold": thr,
         "target_runs": int(label.sum()),
+        "gated_components": gated,
     }
     return out, info
