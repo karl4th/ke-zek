@@ -108,22 +108,32 @@ def assign(
     use_conversation: bool = True,
     min_voice_s: float = 0.5,
     min_overlap: int = 10,
+    rel_db: float = 35.0,
+    refine: int = 5,
     fade: int = 160,
 ) -> tuple[np.ndarray, dict]:
-    """Target waveform from two separated streams; ``info`` describes the decision."""
+    """Target waveform from two separated streams; ``info`` describes the decision.
+
+    With ``refine`` > 0 the voice evidence of a run is the difference of its cosines to the two
+    people's centroids (each the duration-weighted mean of the runs currently given to them, the
+    target's anchored by the enrollment), and labels and centroids are re-estimated that many
+    times. With 0, the cosine to the enrollment against a two-cluster threshold."""
     ref_db = float(np.percentile(frame_db(mix), 95))
-    runs = [(s, a, b) for s in (0, 1) for a, b in stream_runs(streams[s], ref_db)]
+    runs = [(s, a, b) for s in (0, 1) for a, b in stream_runs(streams[s], ref_db, rel_db)]
     n = len(runs)
     if n == 0:
         return np.zeros_like(mix), {"runs": 0}
     score = np.zeros(n)
     weight = np.zeros(n)
+    emb = np.zeros((n, enr_embedding.shape[-1]), np.float32)
+    enr = torch.nn.functional.normalize(enr_embedding, dim=-1)[0].cpu().numpy()
     for i, (s, a, b) in enumerate(runs):
         if (b - a) * 0.01 < min_voice_s:
             continue
         seg = streams[s][a * FRAME : min(b, a + 1000) * FRAME]
         e = se(torch.from_numpy(np.ascontiguousarray(seg, np.float32))[None].to(device))
-        score[i] = float(torch.nn.functional.cosine_similarity(e, enr_embedding, dim=-1)[0])
+        emb[i] = torch.nn.functional.normalize(e, dim=-1)[0].cpu().numpy()
+        score[i] = float(emb[i] @ enr)
         weight[i] = min((b - a) * 0.01, 5.0)
     voiced = weight > 0
     thr = two_means_threshold(score[voiced], weight[voiced]) if voiced.any() else 0.0
@@ -160,15 +170,33 @@ def assign(
             conflicts += int(pi == pj)
             continue
         parent[rj], parity[rj] = ri, pi ^ pj ^ 1
-    comp_score: dict[int, float] = {}
-    for i in range(n):
-        r, p = find(i)
-        comp_score[r] = comp_score.get(r, 0.0) + (evidence[i] if p == 0 else -evidence[i])
-    label = np.zeros(n, bool)
-    for i in range(n):
-        r, p = find(i)
-        root_is_target = comp_score[r] > 0 or (comp_score[r] == 0 and not voiced.any())
-        label[i] = root_is_target if p == 0 else not root_is_target
+    roots = [find(i) for i in range(n)]
+
+    def labels_from(ev):
+        comp: dict[int, float] = {}
+        for i, (r, p) in enumerate(roots):
+            comp[r] = comp.get(r, 0.0) + (ev[i] if p == 0 else -ev[i])
+        lab = np.zeros(n, bool)
+        for i, (r, p) in enumerate(roots):
+            t = comp[r] > 0
+            lab[i] = t if p == 0 else not t
+        return lab
+
+    label = labels_from(evidence)
+    for _ in range(refine if voiced.sum() >= 2 else 0):
+        wt = weight * label
+        wo = weight * ~label
+        mu_t = enr * 2.0 + (wt[:, None] * emb).sum(0)
+        mu_o = (wo[:, None] * emb).sum(0)
+        if not wo.any():
+            break
+        mu_t /= np.linalg.norm(mu_t) + 1e-9
+        mu_o /= np.linalg.norm(mu_o) + 1e-9
+        ev = np.where(voiced, weight * (emb @ mu_t - emb @ mu_o), 0.0)
+        new = labels_from(ev)
+        if (new == label).all():
+            break
+        label = new
     out = np.zeros(len(mix), np.float32)
     ramp = np.linspace(0, 1, fade, dtype=np.float32)
     for (s, a, b), t in zip(runs, label, strict=True):

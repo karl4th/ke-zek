@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--model", default="")
     ap.add_argument("--arch", default="kezek")
     ap.add_argument("--no-conversation", action="store_true", help="block: voice evidence only")
+    ap.add_argument("--refine", type=int, default=5, help="block: centroid iterations (0 = off)")
+    ap.add_argument("--rel-db", type=float, default=35.0, help="block: run detection level")
     ap.add_argument("--split", choices=("val", "test"), default="val")
     ap.add_argument("--final", action="store_true")
     ap.add_argument("--excerpt-s", type=float, default=60.0)
@@ -130,10 +132,14 @@ def main():
                 est = mono_long(model, mix, enr, d, dev)
             else:
                 if a.method == "oracle_block":  # the clean tracks stand in for the separator
-                    streams = np.stack([t, o]) if rng.random() < 0.5 else np.stack([o, t])
+                    flip = np.random.default_rng([a.seed, used]).random() < 0.5
+                    streams = np.stack([o, t]) if flip else np.stack([t, o])
                 else:
                     streams = separate_long(model, mix, dev)
-                est, info = assign(streams, mix, d, se, dev, use_conversation=not a.no_conversation)
+                est, info = assign(
+                    streams, mix, d, se, dev, use_conversation=not a.no_conversation,
+                    refine=a.refine, rel_db=a.rel_db,
+                )
             m = np.repeat(at, FRAME)
             l_ref = float(np.mean(np.float64(t[m]) ** 2)) if m.any() else float(np.mean(t**2)) + 1e-12
             s = metrics.segment_scores(est, t, o, mix, at, ao, disputed_frames(at, ao), l_ref)
@@ -153,7 +159,7 @@ def main():
             print(f"{used} excerpts, {time.time() - t0:.0f}s", flush=True)
     out = {
         "method": a.method, "model": a.model, "split": a.split, "excerpts": len(scores),
-        "conversation_term": not a.no_conversation, "excerpt_s": a.excerpt_s,
+        "conversation_term": not a.no_conversation, "refine": a.refine, "rel_db": a.rel_db, "excerpt_s": a.excerpt_s,
         "enroll_s": a.enroll_s, **metrics.aggregate(scores),
     }
     out["ci"] = metrics.bootstrap_ci(scores, n_boot=500)
