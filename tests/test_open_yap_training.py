@@ -98,7 +98,7 @@ def test_power_selection_prefers_stronger_clean_enrollment(tmp_path):
     time = np.arange(rate * seconds) / rate
     tone = np.sin(2 * np.pi * 220 * time)
     sf.write(directory / "speaker_a.wav", tone * np.where(time < 10, 0.01, 0.1), rate)
-    sf.write(directory / "speaker_b.wav", tone * np.where(time < 10, 0.1, 0.01), rate)
+    sf.write(directory / "speaker_b.wav", tone * np.where(time < 10, 0.00001, 0.1), rate)
     pairs = scan_conversations(tmp_path)
     ratio = OpenYapWindows(pairs, 30, seed=7, mixture_seconds=2, enrollment_seconds=3)
     power = OpenYapWindows(
