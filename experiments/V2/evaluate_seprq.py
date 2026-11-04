@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from importlib.metadata import version
@@ -24,6 +25,18 @@ def align_to_mixture(estimate: np.ndarray, mixture: np.ndarray) -> np.ndarray:
     return estimate * np.clip(gain, -100.0, 100.0)
 
 
+def load_head_checkpoint(pipe, path: Path, task: str, upstream: str) -> tuple[str, int]:
+    checksum = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if state["config"]["task"] != task or state["config"]["upstream"] != upstream:
+        raise ValueError("Head checkpoint task or upstream does not match")
+    pipe.head.load_state_dict(state["head"])
+    return checksum.hexdigest(), int(state["step"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, required=True)
@@ -36,6 +49,7 @@ def main() -> None:
         default="target-speaker-extraction",
     )
     parser.add_argument("--upstream", default="WavLM_BASE")
+    parser.add_argument("--head-checkpoint", type=Path)
     parser.add_argument("--raw-output", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--run-name", default="v2-direct-pretrained-tse-val128")
@@ -53,6 +67,12 @@ def main() -> None:
     if dirty:
         raise RuntimeError("Evaluation must use a clean commit")
     pipe = SepRQPipeline(args.task, upstream=args.upstream, device=args.device)
+    checkpoint_hash = None
+    checkpoint_step = None
+    if args.head_checkpoint:
+        checkpoint_hash, checkpoint_step = load_head_checkpoint(
+            pipe, args.head_checkpoint, args.task, args.upstream
+        )
     pipe.eval()
     _, val_pairs, test_pairs = select_splits(
         scan_conversations(args.data_root), args.split_manifest, 42
@@ -68,6 +88,8 @@ def main() -> None:
         "model_revision": HfApi().model_info("SepRQ/SepRQ").sha,
         "task": args.task,
         "upstream": args.upstream,
+        "head_checkpoint_sha256": checkpoint_hash,
+        "head_checkpoint_step": checkpoint_step,
         "gain_alignment": not args.raw_output,
         "split_manifest": str(args.split_manifest),
         "split": args.split,
