@@ -61,3 +61,27 @@ def test_loss_is_finite_and_reaches_model():
     assert set(parts) == {"active_snr_db", "overlap_snr_db", "absent_residual_db", "activity_bce"}
     loss.backward()
     assert model.band_outputs[0].weight.grad is not None
+
+
+def test_overlap_sampling_centers_training_crops_on_words(tmp_path):
+    directory = tmp_path / "conversations" / "conv_demo"
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text(
+        json.dumps({"conversation_id": "demo", "speaker_a_id": "a", "speaker_b_id": "b"})
+    )
+    for side, start, end in (("a", 10.0, 11.0), ("b", 10.5, 11.5)):
+        sf.write(directory / f"speaker_{side}.wav", np.zeros(20 * 16_000), 16_000)
+        (directory / f"speaker_{side}_transcript.json").write_text(
+            json.dumps({"words": [{"start": start, "end": end}]})
+        )
+    dataset = OpenYapWindows(
+        scan_conversations(tmp_path),
+        count=20,
+        seed=3,
+        mixture_seconds=2,
+        enrollment_seconds=3,
+        overlap_sampling=1.0,
+    )
+    for sample in dataset:
+        assert sample["mixture_start_seconds"] <= 10.75
+        assert sample["mixture_start_seconds"] + 2 >= 10.75

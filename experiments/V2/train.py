@@ -36,6 +36,12 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--mixture-seconds", type=float, default=4.0)
     parser.add_argument("--enrollment-seconds", type=float, default=6.0)
+    parser.add_argument(
+        "--overlap-sampling",
+        type=float,
+        default=0.0,
+        help="Chance of centering a training crop on word overlap",
+    )
     parser.add_argument("--val-examples", type=int, default=32)
     parser.add_argument("--eval-every", type=int, default=250)
     parser.add_argument("--max-train-conversations", type=int, default=0)
@@ -59,6 +65,8 @@ def parse() -> argparse.Namespace:
         parser.error("Workers must be nonnegative")
     if args.stop_at < 0 or args.stop_at > args.steps:
         parser.error("Stop step must be between zero and total steps")
+    if not 0 <= args.overlap_sampling <= 1:
+        parser.error("Overlap sampling must be between zero and one")
     return args
 
 
@@ -219,6 +227,7 @@ def main() -> None:
         args.seed,
         args.mixture_seconds,
         args.enrollment_seconds,
+        overlap_sampling=args.overlap_sampling,
     )
     val_set = OpenYapWindows(
         val_pairs,
