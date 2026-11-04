@@ -50,16 +50,27 @@ def trim_by_energy(audio: np.ndarray, sample_rate: int = 16_000) -> np.ndarray:
     return selected if len(selected) >= sample_rate // 2 else audio
 
 
-def _voice_score(classifier, enrollment: np.ndarray, source: np.ndarray, device: str) -> float:
-    if float(np.sqrt(np.mean(source**2))) < 1e-4:
+def _speaker_embedding(
+    classifier, audio: np.ndarray, device: str,
+) -> torch.Tensor | None:
+    rms = float(np.sqrt(np.mean(audio**2)))
+    if rms < 1e-4:
+        return None
+    waveform = torch.from_numpy((audio * (0.1 / rms)).astype("float32"))[None].to(device)
+    return classifier.encode_batch(waveform).flatten()
+
+
+def _embedding_score(first: torch.Tensor | None, second: torch.Tensor | None) -> float:
+    if first is None or second is None:
         return -1.0
+    return float(F.cosine_similarity(first, second, dim=0))
 
-    def embed(audio: np.ndarray) -> torch.Tensor:
-        rms = max(float(np.sqrt(np.mean(audio**2))), 1e-5)
-        waveform = torch.from_numpy((audio * (0.1 / rms)).astype("float32"))[None].to(device)
-        return classifier.encode_batch(waveform).flatten()
 
-    return float(F.cosine_similarity(embed(enrollment), embed(source), dim=0))
+def _voice_score(classifier, enrollment: np.ndarray, source: np.ndarray, device: str) -> float:
+    return _embedding_score(
+        _speaker_embedding(classifier, enrollment, device),
+        _speaker_embedding(classifier, source, device),
+    )
 
 
 def _windowed_voice_score(
