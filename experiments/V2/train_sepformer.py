@@ -22,6 +22,18 @@ from kezek.open_yap_training import OpenYapSeparationWindows
 SOURCE_REPO = "speechbrain/sepformer-wsj02mix"
 
 
+def align_sources_to_mixture(
+    estimates: torch.Tensor, mixture: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply one common gain so both estimated tracks sum at the mixture level."""
+    reconstructed = estimates.sum(dim=-1)
+    gain = (
+        (reconstructed * mixture).sum(dim=-1)
+        / reconstructed.square().sum(dim=-1).clamp_min(1e-8)
+    ).clamp(-100, 100)
+    return estimates * gain[:, None, None], gain
+
+
 def _si_sdr(estimate: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
     estimate = estimate - estimate.mean(dim=-1, keepdim=True)
     reference = reference - reference.mean(dim=-1, keepdim=True)
@@ -73,7 +85,8 @@ def evaluate(separator, dataset, device: str) -> dict[str, float]:
             first = sample["first"].numpy()
             second = sample["second"].numpy()
             reduced = AF.resample(mixture, 16_000, 8_000)
-            estimates = separator.separate_batch(reduced)[0].cpu().numpy()
+            aligned, _ = align_sources_to_mixture(separator.separate_batch(reduced), reduced)
+            estimates = aligned[0].cpu().numpy()
             sources = [
                 resample_poly(estimates[:, side], 2, 1).astype("float32")[: len(first)]
                 for side in range(2)
@@ -82,13 +95,6 @@ def evaluate(separator, dataset, device: str) -> dict[str, float]:
                 np.pad(source, (0, len(first) - len(source))) if len(source) < len(first)
                 else source for source in sources
             ]
-            reconstruction = sources[0] + sources[1]
-            mixture_np = mixture[0].cpu().numpy()
-            gain = float(
-                np.dot(mixture_np, reconstruction)
-                / max(np.dot(reconstruction, reconstruction), 1e-8)
-            )
-            sources = [source * gain for source in sources]
             direct_error = np.mean((sources[0] - first) ** 2 + (sources[1] - second) ** 2)
             swapped_error = np.mean((sources[1] - first) ** 2 + (sources[0] - second) ** 2)
             if swapped_error < direct_error:
@@ -252,10 +258,13 @@ def main() -> None:
             reduced_mix = AF.resample(mixture, 16_000, 8_000)
             reduced_first = AF.resample(first, 16_000, 8_000)
             reduced_second = AF.resample(second, 16_000, 8_000)
-            estimates = separator.separate_batch(reduced_mix)
+            estimates, gain = align_sources_to_mixture(
+                separator.separate_batch(reduced_mix), reduced_mix
+            )
             loss, parts = permutation_loss(
                 estimates, reduced_first, reduced_second, reduced_mix
             )
+            parts["separator_gain"] = float(gain.mean().detach())
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Nonfinite loss at step {step}")
             loss.backward()
