@@ -144,7 +144,9 @@ class OpenYapWindows(torch.utils.data.Dataset):
         target = _read_window(target_path, crop_start, crop_frames, rate)
         other = _read_window(other_path, crop_start, crop_frames, rate)
         best_score = -float("inf")
+        best_other_power = -float("inf")
         enrollment = None
+        other_enrollment = None
         enrollment_start = None
         for _ in range(self.enrollment_candidates):
             sample_start = _separate_start(
@@ -154,13 +156,16 @@ class OpenYapWindows(torch.utils.data.Dataset):
             other_sample = _read_window(other_path, sample_start, sample_frames, rate)
             target_power = float(np.mean(candidate**2))
             other_power = float(np.mean(other_sample**2))
+            if other_power > best_other_power:
+                best_other_power, other_enrollment = other_power, other_sample
             score = target_power / (other_power + 1e-6)
             if target_power < 1e-6:
                 score = -1.0
             if score > best_score:
                 best_score, enrollment = score, candidate
                 enrollment_start = sample_start
-        assert enrollment is not None and enrollment_start is not None
+        assert enrollment is not None and other_enrollment is not None
+        assert enrollment_start is not None
 
         mixture = target + other
         gain = min(1.0, 0.95 / max(float(np.max(np.abs(mixture))), 1e-6))
@@ -168,6 +173,7 @@ class OpenYapWindows(torch.utils.data.Dataset):
         return {
             "mixture": torch.from_numpy(mixture.copy()),
             "enrollment": torch.from_numpy(enrollment.copy()),
+            "other_enrollment": torch.from_numpy(other_enrollment.copy()),
             "target": torch.from_numpy(target.copy()),
             "other": torch.from_numpy(other.copy()),
             "conversation_id": pair.conversation_id,

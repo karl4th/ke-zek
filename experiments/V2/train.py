@@ -141,6 +141,8 @@ def upload_checkpoint(args: argparse.Namespace, paths: list[Path]) -> None:
 def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dict[str, float]:
     model.eval()
     scores: list[dict[str, float]] = []
+    reverse_scores: list[float] = []
+    enrollment_deltas: list[float] = []
     demo_dir.mkdir(parents=True, exist_ok=True)
     with torch.inference_mode():
         for index in range(len(dataset)):
@@ -151,6 +153,23 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
             target = sample["target"].numpy()
             other = sample["other"].numpy()
             scores.append(score_extraction(estimate, target, other, SAMPLE_RATE).as_dict())
+            if (
+                "other_enrollment" in sample
+                and float(sample["other_enrollment"].square().mean()) >= 1e-6
+            ):
+                opposite = (
+                    model(mixture, sample["other_enrollment"][None].to(device))
+                    .waveform[0]
+                    .cpu()
+                    .numpy()
+                )
+                reverse = score_extraction(opposite, other, target, SAMPLE_RATE)
+                if np.isfinite(reverse.sisdri_overlap):
+                    reverse_scores.append(reverse.sisdri_overlap)
+                enrollment_deltas.append(
+                    float(np.sqrt(np.mean((estimate - opposite) ** 2)))
+                    / max(float(np.sqrt(np.mean(estimate**2))), 1e-6)
+                )
             if index < demo_count:
                 for name, audio in (
                     ("mixture", sample["mixture"].numpy()),
@@ -161,11 +180,17 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
                         demo_dir / f"{index:03d}_{name}.wav", audio, SAMPLE_RATE, subtype="FLOAT"
                     )
     model.train()
-    return {
+    summary = {
         key: float(np.mean(values))
         for key in scores[0]
         if (values := [score[key] for score in scores if np.isfinite(score[key])])
     }
+    if reverse_scores:
+        summary["reverse_sisdri_overlap"] = float(np.mean(reverse_scores))
+    if enrollment_deltas:
+        summary["enrollment_delta_ratio"] = float(np.mean(enrollment_deltas))
+        summary["reverse_examples"] = float(len(enrollment_deltas))
+    return summary
 
 
 def save_checkpoint(path: Path, step: int, model, optimizer, scheduler, manifest: dict) -> None:

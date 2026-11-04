@@ -27,6 +27,7 @@ def test_evaluation_writes_audio_and_scores_overlap(tmp_path):
     sample = {
         "mixture": target + other,
         "enrollment": target[:8000],
+        "other_enrollment": other[:8000],
         "target": target,
         "other": other,
     }
@@ -35,6 +36,8 @@ def test_evaluation_writes_audio_and_scores_overlap(tmp_path):
     )
     scores = module.evaluate(model, [sample], "cpu", tmp_path, demo_count=1)
     assert abs(scores["sisdri_overlap"]) < 1e-3
+    assert abs(scores["reverse_sisdri_overlap"]) < 1e-3
+    assert scores["enrollment_delta_ratio"] < 1e-3
     assert len(list(tmp_path.glob("*.wav"))) == 3
 
 
