@@ -282,6 +282,7 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
     scores: list[dict[str, float]] = []
     reverse_scores: list[float] = []
     enrollment_deltas: list[float] = []
+    mask_errors: list[float] = []
     short_turn_scores: list[float] = []
     short_turn_count = 0
     demo_dir.mkdir(parents=True, exist_ok=True)
@@ -290,9 +291,21 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
             sample = dataset[index]
             mixture = sample["mixture"][None].to(device)
             enrollment = sample["enrollment"][None].to(device)
-            estimate = model(mixture, enrollment).waveform[0].cpu().numpy()
+            model_output = model(mixture, enrollment)
+            estimate = model_output.waveform[0].cpu().numpy()
             target = sample["target"].numpy()
             other = sample["other"].numpy()
+            mask_errors.append(
+                float(
+                    mask_supervision_loss(
+                        model_output,
+                        sample["target"][None].to(device),
+                        sample["other"][None].to(device),
+                        model.n_fft,
+                        model.hop_length,
+                    )
+                )
+            )
             scores.append(score_extraction(estimate, target, other, SAMPLE_RATE).as_dict())
             short_turn = short_overlap_turn_score(sample, estimate, target, other)
             if short_turn is not None:
@@ -335,6 +348,7 @@ def evaluate(model, dataset, device, demo_dir: Path, demo_count: int = 4) -> dic
     if enrollment_deltas:
         summary["enrollment_delta_ratio"] = float(np.mean(enrollment_deltas))
         summary["reverse_examples"] = float(len(enrollment_deltas))
+    summary["mask_mae"] = float(np.mean(mask_errors))
     if short_turn_scores:
         summary["short_overlap_turn_improvement_db"] = float(np.mean(short_turn_scores))
         summary["short_overlap_turn_examples"] = float(len(short_turn_scores))

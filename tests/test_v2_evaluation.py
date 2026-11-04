@@ -41,6 +41,7 @@ def test_evaluation_writes_audio_and_scores_overlap(tmp_path):
     assert abs(scores["sisdri_overlap"]) < 1e-3
     assert abs(scores["reverse_sisdri_overlap"]) < 1e-3
     assert scores["enrollment_delta_ratio"] < 1e-3
+    assert np.isfinite(scores["mask_mae"])
     assert len(list(tmp_path.glob("*.wav"))) == 3
 
 
