@@ -68,6 +68,7 @@ def main() -> None:
     parser.add_argument("--split-manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--examples", type=int, default=128)
+    parser.add_argument("--mixture-seconds", type=float, default=4.0)
     parser.add_argument("--enrollment-seconds", type=float, default=6.0)
     parser.add_argument("--trim-silence", action="store_true")
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
@@ -77,8 +78,8 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-tracker", action="store_true")
     args = parser.parse_args()
-    if args.examples < 1 or args.enrollment_seconds <= 0:
-        parser.error("Examples and enrollment duration must be positive")
+    if args.examples < 1 or min(args.mixture_seconds, args.enrollment_seconds) <= 0:
+        parser.error("Examples and window durations must be positive")
     if not args.no_tracker and (
         not os.environ.get("AIRON_API_KEY") or not os.environ.get("AIRON_URL")
     ):
@@ -119,6 +120,7 @@ def main() -> None:
     _, val_pairs, _ = select_splits(scan_conversations(args.data_root), args.split_manifest, 42)
     dataset = OpenYapWindows(
         val_pairs, args.examples, seed=10_042,
+        mixture_seconds=args.mixture_seconds,
         enrollment_seconds=args.enrollment_seconds,
     )
     commit, dirty = git_state()
@@ -133,6 +135,7 @@ def main() -> None:
         "speaker_revision": speaker_revision,
         "split_manifest": str(args.split_manifest),
         "examples": args.examples,
+        "mixture_seconds": args.mixture_seconds,
         "enrollment_seconds": args.enrollment_seconds,
         "trim_silence": args.trim_silence,
         "val_eligible_conversations": len(dataset.pairs),
