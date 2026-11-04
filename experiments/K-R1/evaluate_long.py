@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--tse-model", default="", help="hybrid: KezekTSE state dict for the hint")
     ap.add_argument("--hint-weight", type=float, default=1.0)
     ap.add_argument("--max-run", type=int, default=200, help="block: longest run, frames (0 = off)")
+    ap.add_argument("--cross-db", type=float, default=20.0, help="block: residual suppression (0 = off)")
     ap.add_argument("--diagnose", action="store_true", help="block: save per-run decisions")
     ap.add_argument("--oracle-assign", action="store_true", help="block: label runs by the clean tracks")
     ap.add_argument("--same-cos", type=float, default=0.5, help="block: one-voice check")
@@ -152,7 +153,7 @@ def main():
                 est, info = assign(
                     streams, mix, d, se, dev, use_conversation=not a.no_conversation,
                     refine=a.refine, rel_db=a.rel_db, min_target_cos=a.min_target_cos,
-                    same_cos=a.same_cos, max_run=a.max_run, oracle=(t, o) if a.oracle_assign else None,
+                    same_cos=a.same_cos, max_run=a.max_run, cross_db=a.cross_db, oracle=(t, o) if a.oracle_assign else None,
                     hint=hint, hint_weight=a.hint_weight,
                 )
             m = np.repeat(at, FRAME)
@@ -187,7 +188,7 @@ def main():
     out = {
         "method": a.method, "model": a.model, "split": a.split, "excerpts": len(scores),
         "conversation_term": not a.no_conversation, "refine": a.refine, "rel_db": a.rel_db,
-        "min_target_cos": a.min_target_cos, "same_cos": a.same_cos, "max_run": a.max_run,
+        "min_target_cos": a.min_target_cos, "same_cos": a.same_cos, "max_run": a.max_run, "cross_db": a.cross_db,
         "tse_model": a.tse_model, "hint_weight": a.hint_weight, "excerpt_s": a.excerpt_s,
         "enroll_s": a.enroll_s, **metrics.aggregate(scores),
     }

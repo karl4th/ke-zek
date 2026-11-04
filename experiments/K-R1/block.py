@@ -65,10 +65,24 @@ def frame_db(x: np.ndarray) -> np.ndarray:
     return 10 * np.log10(np.mean(np.float64(x[: n * FRAME]).reshape(n, FRAME) ** 2, axis=1) + 1e-12)
 
 
-def stream_runs(y: np.ndarray, ref_db: float, rel_db: float = 35.0, merge: int = 30, min_len: int = 10):
+def stream_runs(
+    y: np.ndarray,
+    ref_db: float,
+    rel_db: float = 35.0,
+    merge: int = 30,
+    min_len: int = 10,
+    other: np.ndarray | None = None,
+    cross_db: float = 0.0,
+):
     """Speech runs of one stream (frame index pairs): frames within ``rel_db`` of the mixture's
-    loud level, 100 ms hangover, gaps under ``merge`` frames closed."""
-    act = frame_db(y) > ref_db - rel_db
+    loud level and, with ``cross_db`` > 0, no more than ``cross_db`` below the other stream at
+    the same moment (a separator leaves a faint copy of the talker in its second output; taken
+    for speech, it would read as two people talking at once). 100 ms hangover, gaps under
+    ``merge`` frames closed."""
+    db = frame_db(y)
+    act = db > ref_db - rel_db
+    if other is not None and cross_db > 0:
+        act &= db > frame_db(other) - cross_db
     k = np.ones(21)
     act = np.convolve(act.astype(float), k, mode="same") > 0
     idx = np.flatnonzero(act)
@@ -125,6 +139,7 @@ def assign(
     gate_frames: int = 200,
     same_cos: float = 0.5,
     max_run: int = 200,
+    cross_db: float = 20.0,
     fade: int = 160,
     oracle: tuple[np.ndarray, np.ndarray] | None = None,
     hint: np.ndarray | None = None,
@@ -140,7 +155,7 @@ def assign(
     runs = [
         (s, a, b)
         for s in (0, 1)
-        for a0, b0 in stream_runs(streams[s], ref_db, rel_db)
+        for a0, b0 in stream_runs(streams[s], ref_db, rel_db, other=streams[1 - s], cross_db=cross_db)
         for a, b in split_run(a0, b0, max_run)
     ]
     n = len(runs)
