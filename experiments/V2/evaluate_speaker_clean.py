@@ -8,24 +8,11 @@ import os
 from pathlib import Path
 
 import numpy as np
-from evaluate_sepformer import SPEAKER_REPO, _voice_score
+from evaluate_sepformer import SPEAKER_REPO, _voice_score, trim_by_energy
 from train import git_state, select_splits
 
 from kezek.open_yap import scan_conversations
 from kezek.open_yap_training import OpenYapWindows
-
-
-def trim_by_energy(audio: np.ndarray, sample_rate: int = 16_000) -> np.ndarray:
-    """Concatenate speech-energy frames, falling back to the original when too short."""
-    frame = sample_rate // 50
-    count = len(audio) // frame
-    if count < 1:
-        return audio
-    frames = audio[: count * frame].reshape(count, frame)
-    rms = np.sqrt(np.mean(frames**2, axis=1))
-    threshold = max(float(np.max(rms)) * 0.03, 1e-3)
-    selected = frames[rms >= threshold].reshape(-1)
-    return selected if len(selected) >= sample_rate // 2 else audio
 
 
 def main() -> None:

@@ -37,6 +37,19 @@ def _fit_length(audio: np.ndarray, length: int) -> np.ndarray:
     return audio[:length]
 
 
+def trim_by_energy(audio: np.ndarray, sample_rate: int = 16_000) -> np.ndarray:
+    """Concatenate speech-energy frames, preserving the original if too little remains."""
+    frame = sample_rate // 50
+    count = len(audio) // frame
+    if count < 1:
+        return audio
+    frames = audio[: count * frame].reshape(count, frame)
+    rms = np.sqrt(np.mean(frames**2, axis=1))
+    threshold = max(float(np.max(rms)) * 0.03, 1e-3)
+    selected = frames[rms >= threshold].reshape(-1)
+    return selected if len(selected) >= sample_rate // 2 else audio
+
+
 def _voice_score(classifier, enrollment: np.ndarray, source: np.ndarray, device: str) -> float:
     if float(np.sqrt(np.mean(source**2))) < 1e-4:
         return -1.0
@@ -56,6 +69,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--examples", type=int, default=128)
     parser.add_argument("--enrollment-seconds", type=float, default=6.0)
+    parser.add_argument("--trim-silence", action="store_true")
     parser.add_argument("--run-name", default="v2-sepformer-ecapa-baseline")
     parser.add_argument("--separator-repo", default=SEPARATOR_REPO)
     parser.add_argument("--speaker-repo", default=SPEAKER_REPO)
@@ -117,6 +131,7 @@ def main() -> None:
         "split_manifest": str(args.split_manifest),
         "examples": args.examples,
         "enrollment_seconds": args.enrollment_seconds,
+        "trim_silence": args.trim_silence,
         "val_eligible_conversations": len(dataset.pairs),
     }
     if dirty:
@@ -162,21 +177,31 @@ def main() -> None:
                 )
                 sources = [source * gain for source in sources]
                 enrollment = sample["enrollment"].numpy()
+                if args.trim_silence:
+                    enrollment = trim_by_energy(enrollment)
+                    matching_sources = [trim_by_energy(source) for source in sources]
+                else:
+                    matching_sources = sources
                 if float(np.sqrt(np.mean(target**2))) >= 1e-3:
+                    clean_target = trim_by_energy(target) if args.trim_silence else target
+                    clean_other = trim_by_energy(other) if args.trim_silence else other
                     clean_scores = [
                         _voice_score(classifier, enrollment, clean_source, args.device)
-                        for clean_source in (target, other)
+                        for clean_source in (clean_target, clean_other)
                     ]
                     clean_selected_correct.append(float(clean_scores[0] > clean_scores[1]))
                 scores_by_source = [
-                    _voice_score(classifier, enrollment, source, args.device) for source in sources
+                    _voice_score(classifier, enrollment, source, args.device)
+                    for source in matching_sources
                 ]
                 selected = int(np.argmax(scores_by_source))
                 estimate = sources[selected]
                 opposite_enrollment = sample["other_enrollment"].numpy()
+                if args.trim_silence:
+                    opposite_enrollment = trim_by_energy(opposite_enrollment)
                 reverse_selected = int(np.argmax([
                     _voice_score(classifier, opposite_enrollment, source, args.device)
-                    for source in sources
+                    for source in matching_sources
                 ]))
                 reverse = sources[reverse_selected]
                 source_metrics = [
