@@ -22,6 +22,10 @@ def load_env(path: str = ENV_FILE) -> None:
             continue
         key, value = line.removeprefix("export ").split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    # the env file gives the API root with /v1, and the client appends /v1 itself
+    url = os.environ.get("AIRON_URL", "")
+    if url.rstrip("/").endswith("/v1"):
+        os.environ["AIRON_URL"] = url.rstrip("/")[: -len("/v1")]
 
 
 def init(name: str, config: dict, tags: list[str], total_steps: int):
@@ -35,7 +39,7 @@ def init(name: str, config: dict, tags: list[str], total_steps: int):
         return airon.init(
             project="kezek",
             name=name,
-            experiment=os.environ.get("AIRON_EXPERIMENT", "3ef187b1-0e4f-4aa0-9193-b37cc6efeb64"),
+            experiment=os.environ.get("AIRON_EXPERIMENT", "K-R1 real-conversation TSE on Open Yap"),
             config=config,
             tags=["K-R1", *tags],
             total_steps=total_steps,
