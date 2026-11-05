@@ -28,6 +28,7 @@ class IdentityEncoder(nn.Module):
     def __init__(self, n_mels: int = 80, width: int = 256, layers: int = 3, emb: int = 128, speaker=None):
         super().__init__()
         self._speaker = [speaker]  # not a submodule: frozen, not saved with the encoder
+        self.solo_threshold = 0.0  # > 0: the speaker encoder sees only confidently solo frames
         self.dim = speaker.dim if speaker is not None else emb
         import torchaudio
 
@@ -57,7 +58,8 @@ class IdentityEncoder(nn.Module):
         spk = self._speaker[0]
         if spk is not None:
             T = wav.shape[-1]
-            w = solo.repeat_interleave(2 * HOP, dim=-1)[..., :T]
+            ws = (solo > self.solo_threshold).float() if self.solo_threshold > 0 else solo
+            w = ws.repeat_interleave(2 * HOP, dim=-1)[..., :T]
             w = F.pad(w, (0, T - w.shape[-1]))
             masked = (wav[:, None] * w).flatten(0, 1)
             with torch.autocast(wav.device.type, enabled=False):

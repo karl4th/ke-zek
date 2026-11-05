@@ -266,6 +266,8 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--amp", action="store_true")
+    ap.add_argument("--solo-threshold", type=float, default=0.0,
+                    help="ecapa slots: use only frames with solo probability above this")
     ap.add_argument("--slot-embedding", choices=("ecapa", "learned"), default="ecapa",
                     help="ecapa: frozen pretrained speaker encoder on solo-weighted mixture")
     ap.add_argument("--resume", action="store_true")
@@ -322,6 +324,7 @@ def main():
 
         speaker = SpeakerEncoder(device=dev)
     model = Model(speaker).to(dev)
+    model.enc.solo_threshold = a.solo_threshold
     if a.init_tse:
         model.sep.tse.load_state_dict(torch.load(a.init_tse, map_location="cpu"))
         if a.flip_init:
@@ -405,7 +408,7 @@ def main():
         if np.isfinite(score) and score > best_score:
             best_score = score
             torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
-                        "slot_embedding": a.slot_embedding}, f"{a.out}/best.pt")
+                        "slot_embedding": a.slot_embedding, "solo_threshold": a.solo_threshold}, f"{a.out}/best.pt")
 
     if start == 0 and not a.overfit:
         run_eval(0)
@@ -438,7 +441,7 @@ def main():
             if (step % a.eval_every == 0 and not a.overfit) or step == last:
                 run_eval(step)
             torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
-                        "slot_embedding": a.slot_embedding}, f"{a.out}/model.pt")
+                        "slot_embedding": a.slot_embedding, "solo_threshold": a.solo_threshold}, f"{a.out}/model.pt")
             torch.save({"step": step, "model": model.state_dict(), "opt": opt.state_dict(),
                         "sched": sched.state_dict(), "log": log, "best_score": best_score}, f"{ckpt_path}.tmp")
             os.replace(f"{ckpt_path}.tmp", ckpt_path)

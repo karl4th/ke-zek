@@ -47,6 +47,7 @@ def load(path: str, device: str) -> TwoBlock:
 
         speaker = SpeakerEncoder(device=device)
     m = TwoBlock(speaker).to(device).eval()
+    m.enc.solo_threshold = float(state.get("solo_threshold", 0.0))
     m.enc.load_state_dict(state["enc"])
     m.sep.load_state_dict(state["sep"])
     return m
