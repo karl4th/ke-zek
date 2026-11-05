@@ -42,7 +42,7 @@ class FrozenFeatures(nn.Module):
             bundle = torchaudio.pipelines.WAVLM_BASE_PLUS
             self._net = [bundle.get_model().eval()]
             self.dim = 768
-            self.layer_w = nn.Parameter(torch.zeros(13))
+            self.layer_w = nn.Parameter(torch.zeros(12))  # extract_features returns 12 layers
         elif kind == "mimi":
             from transformers import MimiModel
 
