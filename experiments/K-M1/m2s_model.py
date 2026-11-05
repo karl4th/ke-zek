@@ -83,9 +83,14 @@ class IdentityEncoder(nn.Module):
     layers, 4 heads, FFN 1024, depthwise kernel 31)."""
 
     def __init__(self, n_mels: int = 80, width: int = 256, layers: int = 3, emb: int = 128, speaker=None,
-                 features: str = "mel", backbone: str = "lstm"):
+                 features: str = "mel", backbone: str = "lstm", act_head: str = "multilabel"):
         super().__init__()
         self.backbone = backbone
+        # ``multilabel``: one sigmoid per slot. ``powerset``: one softmax per frame over {silence,
+        # slot 0, slot 1, both} (as pyannote 3); the slot activities are its marginals. With
+        # independent sigmoids a voice the network cannot yet place lights both slots by half.
+        self.act_head = act_head
+        self.last_powerset = None
         self._speaker = [speaker]  # not a submodule: frozen, not saved with the encoder
         self.solo_threshold = 0.0  # > 0: the speaker encoder sees only confidently solo frames
         self.solo_soft = 0.0  # > 0 (training only): sigmoid((solo - threshold) / solo_soft) instead
@@ -116,7 +121,7 @@ class IdentityEncoder(nn.Module):
             hdim = width
         else:
             raise ValueError(backbone)
-        self.act = nn.Linear(hdim, 2)
+        self.act = nn.Linear(hdim, 4 if act_head == "powerset" else 2)
         self.emb = nn.Linear(hdim, emb)
 
     def frames(self, wav: torch.Tensor):
@@ -135,7 +140,13 @@ class IdentityEncoder(nn.Module):
         else:
             with torch.autocast(wav.device.type, enabled=False):  # no fast bf16 LSTM kernel
                 h, _ = self.rnn(h.float())
-        return self.act(h).transpose(1, 2).float(), self.emb(h).float()
+        a = self.act(h).float()
+        if self.act_head == "powerset":
+            self.last_powerset = a  # [B, F, 4] logits over silence, slot 0, slot 1, both
+            ps = torch.softmax(a, -1)
+            p = torch.stack([ps[..., 1] + ps[..., 3], ps[..., 2] + ps[..., 3]], 1).clamp(1e-6, 1 - 1e-6)
+            return torch.log(p) - torch.log1p(-p), self.emb(h).float()  # marginal logits [B, 2, F]
+        return a.transpose(1, 2), self.emb(h).float()
 
     def forward(self, wav: torch.Tensor):
         """wav [B, T] -> activity logits [B, 2, F], slot embeddings [B, 2, dim] (unit norm)."""

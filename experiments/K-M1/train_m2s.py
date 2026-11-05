@@ -45,9 +45,9 @@ TERMS = ("sep", "act", "id", "mix")
 
 
 class Model(torch.nn.Module):
-    def __init__(self, speaker=None, features="mel", backbone="lstm"):
+    def __init__(self, speaker=None, features="mel", backbone="lstm", act_head="multilabel"):
         super().__init__()
-        self.enc = IdentityEncoder(speaker=speaker, features=features, backbone=backbone)
+        self.enc = IdentityEncoder(speaker=speaker, features=features, backbone=backbone, act_head=act_head)
         self.sep = ConditionedSeparator(emb=self.enc.dim)
 
 
@@ -92,7 +92,20 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp, bc_weight=1.0):
     act20 = frames_20ms(act, logits.shape[-1])
     bc20 = frames_20ms(b["bc"].to(dev), logits.shape[-1])
     fw = 1.0 + (bc_weight - 1.0) * bc20  # [B, 2, F] frame weights of each speaker
-    bce = torch.stack([
+    if model.enc.act_head == "powerset":
+        ps = model.enc.last_powerset  # [B, F, 4]
+        lab = act20 > 0.5
+        bcf = bc20 > 0.5
+        terms = []
+        for p in ((0, 1), (1, 0)):
+            cls = lab[:, p[0]].long() + 2 * lab[:, p[1]].long()  # 0 silence, 1 slot 0, 2 slot 1, 3 both
+            wf = 1.0 + (bc_weight - 1.0) * (bcf[:, 0] | bcf[:, 1]).float()
+            ce = F.cross_entropy(ps.transpose(1, 2), cls, reduction="none")  # [B, F]
+            terms.append((ce * wf).mean(-1))
+        bce = torch.stack(terms, dim=1)
+    else:
+        bce = None
+    bce = bce if bce is not None else torch.stack([
         ((F.binary_cross_entropy_with_logits(logits[:, 0], act20[:, p[0]], reduction="none") * fw[:, p[0]]).mean(-1)
          + (F.binary_cross_entropy_with_logits(logits[:, 1], act20[:, p[1]], reduction="none") * fw[:, p[1]]).mean(-1)) / 2
         for p in ((0, 1), (1, 0))
@@ -299,6 +312,7 @@ def main():
     ap.add_argument("--slot-embedding", choices=("ecapa", "learned"), default="ecapa",
                     help="ecapa: frozen pretrained speaker encoder on solo-weighted mixture")
     ap.add_argument("--backbone", choices=("lstm", "conformer"), default="lstm", help="block 1 sequence model")
+    ap.add_argument("--act-head", choices=("multilabel", "powerset"), default="multilabel")
     ap.add_argument("--single-p", type=float, default=0.0, help="share of monologue spans (one track silenced)")
     ap.add_argument("--solo-soft", type=float, default=0.0,
                     help="training: soft solo-frame weights for the slot embeddings (temperature)")
@@ -370,7 +384,7 @@ def main():
         from kezek.model import SpeakerEncoder
 
         speaker = SpeakerEncoder(device=dev)
-    model = Model(speaker, a.features, a.backbone).to(dev)
+    model = Model(speaker, a.features, a.backbone, a.act_head).to(dev)
     model.enc.solo_threshold = a.solo_threshold
     model.enc.solo_soft = a.solo_soft
     if a.init_tse:
@@ -380,7 +394,12 @@ def main():
                 model.sep.tse.dec.weight.neg_()
     if a.init_model:
         state = torch.load(a.init_model, map_location="cpu")
-        model.enc.load_state_dict(state["enc"])
+        own = model.enc.state_dict()
+        enc_state = {k: v for k, v in state["enc"].items() if k in own and own[k].shape == v.shape}
+        skipped = sorted(set(state["enc"]) - set(enc_state))
+        if skipped:
+            print(f"init: not loaded (new head): {skipped}", flush=True)
+        model.enc.load_state_dict(enc_state, strict=not skipped)
         if "sep" in state and a.stage == "e2e" and state.get("slot_embedding", "learned") == a.slot_embedding:
             model.sep.load_state_dict(state["sep"])
     if a.stage == "sep":
@@ -460,7 +479,7 @@ def main():
             best_score = score
             torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
                         "slot_embedding": a.slot_embedding, "solo_threshold": a.solo_threshold,
-                        "features": a.features, "backbone": a.backbone}, f"{a.out}/best.pt")
+                        "features": a.features, "backbone": a.backbone, "act_head": a.act_head}, f"{a.out}/best.pt")
 
     if start == 0 and not a.overfit:
         run_eval(0)
@@ -494,7 +513,7 @@ def main():
                 run_eval(step)
             torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
                         "slot_embedding": a.slot_embedding, "solo_threshold": a.solo_threshold,
-                        "features": a.features, "backbone": a.backbone}, f"{a.out}/model.pt")
+                        "features": a.features, "backbone": a.backbone, "act_head": a.act_head}, f"{a.out}/model.pt")
             torch.save({"step": step, "model": model.state_dict(), "opt": opt.state_dict(),
                         "sched": sched.state_dict(), "log": log, "best_score": best_score}, f"{ckpt_path}.tmp")
             os.replace(f"{ckpt_path}.tmp", ckpt_path)

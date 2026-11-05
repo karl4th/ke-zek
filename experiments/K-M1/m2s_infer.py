@@ -33,9 +33,9 @@ SR = 16_000
 
 
 class TwoBlock(torch.nn.Module):
-    def __init__(self, speaker=None, features="mel", backbone="lstm"):
+    def __init__(self, speaker=None, features="mel", backbone="lstm", act_head="multilabel"):
         super().__init__()
-        self.enc = IdentityEncoder(speaker=speaker, features=features, backbone=backbone)
+        self.enc = IdentityEncoder(speaker=speaker, features=features, backbone=backbone, act_head=act_head)
         self.sep = ConditionedSeparator(emb=self.enc.dim)
 
 
@@ -46,7 +46,8 @@ def load(path: str, device: str) -> TwoBlock:
         from kezek.model import SpeakerEncoder
 
         speaker = SpeakerEncoder(device=device)
-    m = TwoBlock(speaker, state.get("features", "mel"), state.get("backbone", "lstm")).to(device).eval()
+    m = TwoBlock(speaker, state.get("features", "mel"), state.get("backbone", "lstm"),
+                 state.get("act_head", "multilabel")).to(device).eval()
     m.enc.solo_threshold = float(state.get("solo_threshold", 0.0))
     m.enc.load_state_dict(state["enc"])
     m.sep.load_state_dict(state["sep"])
