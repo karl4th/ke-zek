@@ -66,9 +66,13 @@ class SpanSequences(torch.utils.data.Dataset):
         gain_db: float = 3.0,
         peak: tuple[float, float] = (0.45, 0.9),
         render=None,
+        single_p: float = 0.0,
     ):
         self.pairs, self.n, self.seed = list(pairs), n, seed
         self.render = render  # K-R1 render.Render: the span as one mono recording, or None
+        # share of spans turned into a monologue (one track silenced, its activity cleared): Open
+        # Yap has ~4% 16 s spans with one voice, podcasts have long single-speaker stretches
+        self.single_p = single_p
         self.span, self.chunk, self.k = int(span_s * 100), int(chunk_s * 100), chunks
         self.ref = int(ref_s * 100)
         self.gain_db, self.peak = gain_db, peak
@@ -124,6 +128,13 @@ class SpanSequences(torch.utils.data.Dataset):
             if refs[0] is None or refs[1] is None:
                 continue
             a, b = c.audio(0, start, start + self.span), c.audio(1, start, start + self.span)
+            both = True
+            if self.single_p and rng.random() < self.single_p:
+                drop = int(rng.integers(2))
+                (a, b)[drop][:] = 0.0
+                act = act.copy()
+                act[drop] = False
+                both = False
             ga, gb = (10 ** (rng.uniform(-1, 1, 2) * self.gain_db / 20)).astype(np.float32)
             sa, sb = a * ga, b * gb
             exact = True
@@ -159,6 +170,7 @@ class SpanSequences(torch.utils.data.Dataset):
                 "ref": np.stack(refs).astype(np.float32),
                 "l_ref": np.asarray(levels, np.float32),
                 "category": CATEGORIES.index(cat),
+                "both": np.bool_(both),
                 "conv": self.pairs[k].conversation_id,
             }
         raise RuntimeError(f"no usable span for item {i}")

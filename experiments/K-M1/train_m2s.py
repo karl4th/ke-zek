@@ -98,6 +98,8 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp, bc_weight=1.0):
         for p in ((0, 1), (1, 0))
     ], dim=1)
     nce = info_nce(z, r)
+    if "both" in b:  # a monologue span has no second voice to identify
+        nce = nce * b["both"].to(dev).float()[:, None]
     raw = {"bce": bce, "nce": nce}
     out = {"logits": logits, "act20": act20, "bc20": bc20, "z": z, "r": r}
     if stage == "enc":
@@ -184,6 +186,7 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4, bc_weight=1.0)
     model.eval()
     scores, si_all, si_ov, si_solo = [], [], [], []
     tp = fp = fn = 0.0
+    fo = fo_n = 0.0
     bc_hit = bc_n = 0
     swaps = swap_n = 0
     id_ok, cos_same, cos_diff = [], [], []
@@ -215,6 +218,10 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4, bc_weight=1.0)
             tp += float((pa * lab).sum())
             fp += float((pa * (1 - lab)).sum())
             fn += float(((1 - pa) * lab).sum())
+            # false overlap: frames with exactly one person talking where both slots fire
+            one = lab.sum(0) == 1
+            fo += float((pa.sum(0) == 2)[one].sum())
+            fo_n += float(one.sum())
             # short replies: a run counts as found when >= 50% of its frames are active in its slot
             bc = o["bc20"][j][list(perm)].bool().cpu().numpy()
             pa_np = pa.cpu().numpy()
@@ -245,7 +252,8 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4, bc_weight=1.0)
     model.train()
     out = {"act_precision": tp / max(tp + fp, 1e-9), "act_recall": tp / max(tp + fn, 1e-9)}
     out["act_f1"] = 2 * out["act_precision"] * out["act_recall"] / max(out["act_precision"] + out["act_recall"], 1e-9)
-    out.update({"act_bc_recall": bc_hit / max(bc_n, 1), "act_bc_n": bc_n})
+    out.update({"act_bc_recall": bc_hit / max(bc_n, 1), "act_bc_n": bc_n,
+                "act_false_overlap": fo / max(fo_n, 1.0)})
     out.update({"id_accuracy": float(np.mean(id_ok)), "id_cos_same": float(np.mean(cos_same)),
                 "id_cos_other": float(np.mean(cos_diff))})
     if stage != "enc":
@@ -291,6 +299,7 @@ def main():
     ap.add_argument("--slot-embedding", choices=("ecapa", "learned"), default="ecapa",
                     help="ecapa: frozen pretrained speaker encoder on solo-weighted mixture")
     ap.add_argument("--backbone", choices=("lstm", "conformer"), default="lstm", help="block 1 sequence model")
+    ap.add_argument("--single-p", type=float, default=0.0, help="share of monologue spans (one track silenced)")
     ap.add_argument("--solo-soft", type=float, default=0.0,
                     help="training: soft solo-frame weights for the slot embeddings (temperature)")
     ap.add_argument("--bc-weight", type=float, default=1.0, help="activity BCE weight on short-reply frames")
@@ -345,7 +354,7 @@ def main():
         train_set, val_set = Fixed(), fixed
     else:
         train_set = SpanSequences(train, a.steps * a.bs, seed=a.seed, chunks=a.chunks, render=render,
-                                  span_s=a.span_s)
+                                  span_s=a.span_s, single_p=a.single_p)
         val_set = SpanSequences(val, a.n_val, seed=20_000, chunks=a.chunks, gain_db=0.0, peak=(0.9, 0.9),
                                 render=render, span_s=a.span_s)
     ckpt_path = f"{a.out}/last.pt"
@@ -440,7 +449,7 @@ def main():
     def run_eval(step):
         nonlocal best_score
         m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp, bc_weight=a.bc_weight)
-        show = ("act_f1", "act_bc_recall", "id_accuracy", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
+        show = ("act_f1", "act_bc_recall", "act_false_overlap", "id_accuracy", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
                 "other_solo_leak_db", "both_silent_db", "backchannel_recall", "chunk_swap_rate")
         print(f"EVAL step {step}: " + json.dumps({kk: round(m[kk], 3) for kk in show if kk in m}), flush=True)
         log.append({"step": step, **m})
