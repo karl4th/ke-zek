@@ -412,6 +412,8 @@ def main():
             unit = {t: 1.0 for t in TERMS}
             _, picked, _ = combine(raw, unit, a.stage)
             for t, v in picked.items():
+                if not v.requires_grad:  # e.g. identity with frozen ECAPA slots on thresholded frames
+                    continue
                 g = torch.autograd.grad(v.mean(), params, retain_graph=True, allow_unused=True)
                 sums[t].append(float(torch.sqrt(sum((x.float() ** 2).sum() for x in g if x is not None))))
             if step >= a.calibrate:
