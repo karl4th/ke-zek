@@ -89,6 +89,54 @@ def state_loss(est, clean, act_t, silent, l_ref, level_weight: float, silence_we
     }
 
 
+def real_check(model, se, clip: str, dev: str, enroll_s: float = 20.0) -> dict:
+    """Label-free check on a real single-speaker recording (see real_solo_check.py): the first
+    seconds are the voice sample, on the rest the output should equal the input."""
+    import soundfile as sf
+    from scipy.signal import resample_poly
+
+    from kezek.metrics import si_sdr
+
+    x, sr = sf.read(clip, dtype="float32", always_2d=False)
+    if x.ndim > 1:
+        x = x.mean(1)
+    if sr != 16000:
+        g = math.gcd(sr, 16000)
+        x = resample_poly(x, 16000 // g, sr // g).astype(np.float32)
+    x = x * np.float32(0.9 / max(float(np.abs(x).max()), 1e-6))
+    n_enr = int(enroll_s * 16000)
+    enr, test = x[:n_enr], x[n_enr:]
+    win, hop = 64000, 48000
+    starts = list(range(0, len(test) - win, hop)) + [len(test) - win]
+    was = model.training
+    model.eval()
+    with torch.no_grad():
+        e = torch.from_numpy(enr * np.float32(0.9 / max(float(np.abs(enr).max()), 1e-6)))[None].to(dev)
+        d = se(e)
+        seg = torch.from_numpy(np.stack([test[s:s + win] for s in starts])).to(dev)
+        y = model(seg, e.expand(len(starts), -1), d.expand(len(starts), -1)).float().cpu().numpy()
+    model.train(was)
+    out, w = np.zeros(len(test), np.float32), np.zeros(len(test), np.float32)
+    fade = np.linspace(0, 1, win - hop, dtype=np.float32)
+    for s, yy in zip(starts, y, strict=True):
+        ww = np.ones(win, np.float32)
+        if s > 0:
+            ww[: len(fade)] = fade
+        if s + win < len(test):
+            ww[-len(fade):] = fade[::-1]
+        out[s:s + win] += yy * ww
+        w[s:s + win] += ww
+    out /= np.maximum(w, 1e-6)
+    f = 1600
+    n = len(test) // f
+    ein = np.mean(test[: n * f].reshape(n, f) ** 2, 1) + 1e-12
+    eout = np.mean(out[: n * f].reshape(n, f) ** 2, 1) + 1e-12
+    sp = 10 * np.log10(ein) > 10 * np.log10(ein).max() - 40
+    return {"real/solo_sisdr_db": round(si_sdr(out, test), 2),
+            "real/level_db": round(float(10 * np.log10(eout[sp].sum() / ein[sp].sum())), 2),
+            "real/suppressed_share": round(float(np.mean(10 * np.log10(eout / ein)[sp] < -15)), 3)}
+
+
 def git_commit() -> str:
     try:
         import subprocess
@@ -135,6 +183,9 @@ def main():
     ap.add_argument("--split-file", default="", help="keep validation/test from this split.json")
     ap.add_argument("--aug-root", default="", help="MUSAN + RIRS_NOISES: render windows as one mono recording")
     ap.add_argument("--aug-val", action="store_true", help="also render the validation windows (held-out chain seeds)")
+    ap.add_argument("--render-version", type=int, choices=(1, 2), default=1,
+                    help="1: K-T1 chain + bleed + compression 0.5/2-6; 2: + recording EQ, compression 0.7/2-10")
+    ap.add_argument("--real-clip", default="", help="single-speaker real recording checked at every eval")
     ap.add_argument("--eval-every", type=int, default=2500)
     ap.add_argument("--n-val", type=int, default=400)
     ap.add_argument("--workers", type=int, default=4)
@@ -179,7 +230,11 @@ def main():
             [f"{r}/RIRS_NOISES/simulated_rirs", f"{r}/RIRS_NOISES/real_rirs_isotropic_noises"],
             [f"{r}/musan/noise"], [f"{r}/musan/music"],
         )
-        render = Render(bank)
+        from render import RenderConfig
+
+        rcfg = RenderConfig() if a.render_version == 2 else RenderConfig(
+            eq_p=0.0, compress_p=0.5, compress_ratio=(2.0, 6.0))
+        render = Render(bank, rcfg=rcfg)
         print(f"render: {len(bank.rirs)} rirs, {len(bank.noises)} noises, {len(bank.music)} music", flush=True)
     train_set = RealWindows(
         train, a.steps * a.bs, seed=a.seed, p_overlap=a.p_overlap, sir_jitter_db=a.sir_jitter_db,
@@ -232,7 +287,10 @@ def main():
             "all/target_solo_level_db", "all/other_solo_leak_db", "all/both_silent_db",
             "all/backchannel_recall", "wrong_speaker", "pick_acc",
         )
+        if a.real_clip:
+            m.update(real_check(model, se, a.real_clip, dev))
         short = {f"{n}/{k}": round(m[f"{n}/{k}"], 3) for n in val_sets for k in keep}
+        short.update({k: m[k] for k in m if k.startswith("real/")})
         print(f"EVAL step {step}: {json.dumps(short)}", flush=True)
         log.append({"step": step, **m})
         json.dump(log, open(f"{a.out}/eval_log.json", "w"), indent=1)
