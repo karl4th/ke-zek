@@ -41,7 +41,9 @@ class IdentityEncoder(nn.Module):
             m = self.mel(wav.float()).clamp_min(1e-8).log()
             m = m - m.mean(dim=-1, keepdim=True)
         h = self.front(m).transpose(1, 2)
-        h, _ = self.rnn(h)
+        # no fast cuDNN kernel for bf16 LSTMs: the recurrent part always runs in fp32
+        with torch.autocast(wav.device.type, enabled=False):
+            h, _ = self.rnn(h.float())
         logits = self.act(h).transpose(1, 2)
         e = self.emb(h)
         p = torch.sigmoid(logits.float())
