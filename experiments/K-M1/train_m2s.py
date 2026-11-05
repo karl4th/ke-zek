@@ -45,10 +45,10 @@ TERMS = ("sep", "act", "id", "mix")
 
 
 class Model(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, speaker=None):
         super().__init__()
-        self.enc = IdentityEncoder()
-        self.sep = ConditionedSeparator()
+        self.enc = IdentityEncoder(speaker=speaker)
+        self.sep = ConditionedSeparator(emb=self.enc.dim)
 
 
 def lr_lambda(step: int, warmup: int, total: int) -> float:
@@ -266,6 +266,8 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--amp", action="store_true")
+    ap.add_argument("--slot-embedding", choices=("ecapa", "learned"), default="ecapa",
+                    help="ecapa: frozen pretrained speaker encoder on solo-weighted mixture")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--overfit", type=int, default=0, help="E0: train on this many fixed sequences")
     ap.add_argument("--train-hours", type=float, default=0, help="E1 2-5 h, E2 50 h, E3 100 h; 0 = all")
@@ -314,7 +316,12 @@ def main():
         num_workers=a.workers, collate_fn=collate, drop_last=True, pin_memory=True,
         prefetch_factor=4 if a.workers else None, persistent_workers=bool(a.workers),
     )
-    model = Model().to(dev)
+    speaker = None
+    if a.slot_embedding == "ecapa":
+        from kezek.model import SpeakerEncoder
+
+        speaker = SpeakerEncoder(device=dev)
+    model = Model(speaker).to(dev)
     if a.init_tse:
         model.sep.tse.load_state_dict(torch.load(a.init_tse, map_location="cpu"))
         if a.flip_init:
@@ -323,7 +330,7 @@ def main():
     if a.init_model:
         state = torch.load(a.init_model, map_location="cpu")
         model.enc.load_state_dict(state["enc"])
-        if "sep" in state and a.stage == "e2e":
+        if "sep" in state and a.stage == "e2e" and state.get("slot_embedding", "learned") == a.slot_embedding:
             model.sep.load_state_dict(state["sep"])
     if a.stage == "sep":
         for p in model.enc.parameters():
@@ -349,7 +356,8 @@ def main():
     if a.eval_only:
         if a.init_model:
             state = torch.load(a.init_model, map_location="cpu")
-            model.sep.load_state_dict(state["sep"])
+            if state.get("slot_embedding", "learned") == a.slot_embedding:
+                model.sep.load_state_dict(state["sep"])
         m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp)
         json.dump(m, open(f"{a.out}/eval_only.json", "w"), indent=1)
         print("EVAL ONLY", json.dumps({kk: round(v, 3) for kk, v in m.items() if isinstance(v, float)}), flush=True)
@@ -396,7 +404,8 @@ def main():
         score = m.get("sisdri_overall", m["act_f1"])
         if np.isfinite(score) and score > best_score:
             best_score = score
-            torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict()}, f"{a.out}/best.pt")
+            torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
+                        "slot_embedding": a.slot_embedding}, f"{a.out}/best.pt")
 
     if start == 0 and not a.overfit:
         run_eval(0)
@@ -428,7 +437,8 @@ def main():
         if step % 500 == 0 or step == last:
             if (step % a.eval_every == 0 and not a.overfit) or step == last:
                 run_eval(step)
-            torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict()}, f"{a.out}/model.pt")
+            torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
+                        "slot_embedding": a.slot_embedding}, f"{a.out}/model.pt")
             torch.save({"step": step, "model": model.state_dict(), "opt": opt.state_dict(),
                         "sched": sched.state_dict(), "log": log, "best_score": best_score}, f"{ckpt_path}.tmp")
             os.replace(f"{ckpt_path}.tmp", ckpt_path)

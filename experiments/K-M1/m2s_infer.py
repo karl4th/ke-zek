@@ -33,15 +33,20 @@ SR = 16_000
 
 
 class TwoBlock(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, speaker=None):
         super().__init__()
-        self.enc = IdentityEncoder()
-        self.sep = ConditionedSeparator()
+        self.enc = IdentityEncoder(speaker=speaker)
+        self.sep = ConditionedSeparator(emb=self.enc.dim)
 
 
 def load(path: str, device: str) -> TwoBlock:
-    m = TwoBlock().to(device).eval()
     state = torch.load(path, map_location="cpu")
+    speaker = None
+    if state.get("slot_embedding", "learned") == "ecapa":
+        from kezek.model import SpeakerEncoder
+
+        speaker = SpeakerEncoder(device=device)
+    m = TwoBlock(speaker).to(device).eval()
     m.enc.load_state_dict(state["enc"])
     m.sep.load_state_dict(state["sep"])
     return m
