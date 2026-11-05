@@ -2,7 +2,8 @@
 
     --stage enc   block 1 only: activity BCE + identity InfoNCE (clean references as teacher)
     --stage sep   block 2 only, encoder frozen: separator conditioned on clean-reference
-                  embeddings (teacher forcing), sequence-level PIT
+                  embeddings in speaker order (teacher forcing); the order is known, so no
+                  permutation is chosen (with one, the separator learned to ignore the condition)
     --stage e2e   both blocks: separator conditioned on block 1's mono-only embeddings, teacher
                   forcing decreasing from 1 (first 20% of steps) to 0 (at 60%)
     --calibrate N measure each objective's gradient norm over N batches and write the weights
@@ -156,7 +157,12 @@ def combine(raw, w, stage):
         terms["act"] = raw["bce"] + raw["silence"]
         terms["id"] = raw["nce"] + raw["out2slot"]
     total = sum(w[t] * v for t, v in terms.items())
-    best = total.argmin(1)
+    if stage == "sep":
+        # the slots are the clean references in speaker order: no permutation to choose, so the
+        # separator must follow its conditioning (a free permutation lets it ignore it)
+        best = torch.zeros(total.shape[0], dtype=torch.long, device=total.device)
+    else:
+        best = total.argmin(1)
     rows = torch.arange(total.shape[0], device=total.device)
     loss = total[rows, best]
     if stage != "enc":
