@@ -89,6 +89,9 @@ def main():
                     help="greedy slot memory or global Viterbi linking (m2s_infer.link_windows)")
     ap.add_argument("--cache", default="", help="directory of identity-pass windows per conversation "
                     "(written on the first run, reused after: relinking needs no model)")
+    ap.add_argument("--combine", choices=("max", "mean"), default="max",
+                    help="overlapping windows: maximum or average of slot activity")
+    ap.add_argument("--threshold", type=float, default=0.5)
     a = ap.parse_args()
     link = build_memory if a.linker == "memory" else link_windows
     if a.split == "test" and not a.final:
@@ -129,7 +132,7 @@ def main():
                 os.makedirs(a.cache, exist_ok=True)
                 torch.save(windows, cf)
         link(windows)
-        p_act = memory_activity(windows, len(x)) > 0.5
+        p_act = memory_activity(windows, len(x), a.combine) > a.threshold
         nf = p_act.shape[1]
         bc10 = np.stack([backchannel_frames(act10[0], act10[1]), backchannel_frames(act10[1], act10[0])])
         act = frames_20ms(torch.from_numpy(act10), nf).bool().numpy()

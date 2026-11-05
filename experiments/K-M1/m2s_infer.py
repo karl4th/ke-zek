@@ -222,20 +222,26 @@ def run(model, x: np.ndarray, device: str):
     return y, manifest
 
 
-def memory_activity(windows, n_samples: int) -> np.ndarray:
+def memory_activity(windows, n_samples: int, combine: str = "max") -> np.ndarray:
     """Activity of memory slots A and B on the 20 ms grid: each window's slot probabilities
-    mapped through its assignment, maximum where windows overlap. [2, F20]"""
+    mapped through its assignment; where windows overlap, their maximum or (``combine="mean"``)
+    their average. [2, F20]"""
     nf = n_samples // 320 + 1
     act = np.zeros((2, nf), np.float32)
+    cnt = np.zeros(nf, np.float32)
     for w in windows:
         if w["assign"] is None:
             continue
         f0 = w["start"] // 320
-        p = w["p"].numpy()
+        p = w["p"].float().numpy()
         for m, slot in enumerate(w["assign"]):
             seg = p[slot][: nf - f0]
-            act[m, f0:f0 + len(seg)] = np.maximum(act[m, f0:f0 + len(seg)], seg)
-    return act
+            if combine == "mean":
+                act[m, f0:f0 + len(seg)] += seg
+            else:
+                act[m, f0:f0 + len(seg)] = np.maximum(act[m, f0:f0 + len(seg)], seg)
+        cnt[f0:f0 + len(p[0][: nf - f0])] += 1
+    return act / np.maximum(cnt, 1) if combine == "mean" else act
 
 
 def main():
