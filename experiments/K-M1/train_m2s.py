@@ -291,6 +291,8 @@ def main():
     ap.add_argument("--slot-embedding", choices=("ecapa", "learned"), default="ecapa",
                     help="ecapa: frozen pretrained speaker encoder on solo-weighted mixture")
     ap.add_argument("--backbone", choices=("lstm", "conformer"), default="lstm", help="block 1 sequence model")
+    ap.add_argument("--solo-soft", type=float, default=0.0,
+                    help="training: soft solo-frame weights for the slot embeddings (temperature)")
     ap.add_argument("--bc-weight", type=float, default=1.0, help="activity BCE weight on short-reply frames")
     ap.add_argument("--experiment-tags", default="", help="extra comma-separated tracker tags")
     ap.add_argument("--resume", action="store_true")
@@ -361,6 +363,7 @@ def main():
         speaker = SpeakerEncoder(device=dev)
     model = Model(speaker, a.features, a.backbone).to(dev)
     model.enc.solo_threshold = a.solo_threshold
+    model.enc.solo_soft = a.solo_soft
     if a.init_tse:
         model.sep.tse.load_state_dict(torch.load(a.init_tse, map_location="cpu"))
         if a.flip_init:

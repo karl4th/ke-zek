@@ -88,6 +88,8 @@ class IdentityEncoder(nn.Module):
         self.backbone = backbone
         self._speaker = [speaker]  # not a submodule: frozen, not saved with the encoder
         self.solo_threshold = 0.0  # > 0: the speaker encoder sees only confidently solo frames
+        self.solo_soft = 0.0  # > 0 (training only): sigmoid((solo - threshold) / solo_soft) instead
+        # of the hard cut, so the identity loss reaches the activity network through the frame weights
         self.dim = speaker.dim if speaker is not None else emb
         self.features = features
         if features == "mel":
@@ -143,7 +145,12 @@ class IdentityEncoder(nn.Module):
         spk = self._speaker[0]
         if spk is not None:
             T = wav.shape[-1]
-            ws = (solo > self.solo_threshold).float() if self.solo_threshold > 0 else solo
+            if self.solo_threshold > 0 and self.solo_soft > 0 and self.training:
+                ws = torch.sigmoid((solo - self.solo_threshold) / self.solo_soft)
+            elif self.solo_threshold > 0:
+                ws = (solo > self.solo_threshold).float()
+            else:
+                ws = solo
             w = ws.repeat_interleave(2 * HOP, dim=-1)[..., :T]
             w = F.pad(w, (0, T - w.shape[-1]))
             masked = (wav[:, None] * w).flatten(0, 1)
