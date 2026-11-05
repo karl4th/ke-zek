@@ -32,7 +32,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
 import tracker  # noqa: E402
 from m2s_data import backchannel_frames  # noqa: E402
-from m2s_infer import build_memory, identity_pass, load, memory_activity  # noqa: E402
+from m2s_infer import build_memory, identity_pass, link_windows, load, memory_activity  # noqa: E402
 from m2s_model import frames_20ms  # noqa: E402
 from rdata import _Conversation, _runs, splits  # noqa: E402
 
@@ -85,7 +85,12 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--step", type=int, default=0, help="training step of the model (tracker x axis)")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--linker", choices=("memory", "global"), default="memory",
+                    help="greedy slot memory or global Viterbi linking (m2s_infer.link_windows)")
+    ap.add_argument("--cache", default="", help="directory of identity-pass windows per conversation "
+                    "(written on the first run, reused after: relinking needs no model)")
     a = ap.parse_args()
+    link = build_memory if a.linker == "memory" else link_windows
     if a.split == "test" and not a.final:
         raise SystemExit("the test split is read only with --final")
     _, val, test = splits(a.data, split_file=a.split_file or None)
@@ -115,8 +120,15 @@ def main():
         else:
             x = sa + sb
         x = (x * np.float32(0.9 / max(float(np.abs(x).max()), 1e-4))).astype(np.float32)
-        windows = identity_pass(model, x, a.device, win_s=a.win_s, hop_s=a.hop_s)
-        build_memory(windows)
+        cf = f"{a.cache}/{pair.conversation_id}{'_rec' if render is not None else ''}.pt" if a.cache else ""
+        if cf and os.path.exists(cf):
+            windows = torch.load(cf)
+        else:
+            windows = identity_pass(model, x, a.device, win_s=a.win_s, hop_s=a.hop_s)
+            if cf:
+                os.makedirs(a.cache, exist_ok=True)
+                torch.save(windows, cf)
+        link(windows)
         p_act = memory_activity(windows, len(x)) > 0.5
         nf = p_act.shape[1]
         bc10 = np.stack([backchannel_frames(act10[0], act10[1]), backchannel_frames(act10[1], act10[0])])
@@ -158,7 +170,7 @@ def main():
             y = resample_poly(y, SR // g, rate // g).astype(np.float32)
         y = y * np.float32(0.9 / max(float(np.abs(y).max()), 1e-6))
         windows = identity_pass(model, y, a.device, win_s=a.win_s, hop_s=a.hop_s)
-        build_memory(windows)
+        link(windows)
         p_act = memory_activity(windows, len(y)) > 0.5
         n = p_act.shape[1]
         e = np.log10(np.mean(np.pad(y, (0, n * 320 - len(y)))[: n * 320].reshape(n, 320) ** 2, 1) + 1e-12) * 10

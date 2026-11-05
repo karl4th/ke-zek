@@ -109,6 +109,73 @@ def build_memory(windows, distinct=0.5, margin=0.2, ema=0.1, min_solo=2.0, upd_s
     return mem
 
 
+def _solo(w):
+    p = w["p"].float()
+    return torch.stack([p[0] * (1 - p[1]), p[1] * (1 - p[0])])
+
+
+def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=4.0, iters=4, margin=0.2):
+    """Global A/B linking of all windows at once (instead of the greedy memory):
+    a binary chain over windows (keep or swap their slot order) solved exactly by Viterbi.
+    * Neighbours agree through their overlap: seconds of solo activity that line up when both
+      keep the same order versus the crossed order (``overlap_w`` per second).
+    * Each window agrees with two recording centroids through its slot embeddings, weighted by
+      the slot's solo seconds (capped at ``solo_cap``), ``emb_w`` per unit of cosine.
+    Centroids start from the window with the most solo speech of both voices (or continuity
+    alone) and are re-estimated from the decoded order.
+    Sets w["assign"], w["margin"], w["confident"] like build_memory and returns the centroids."""
+    n = len(windows)
+    if n == 0:
+        return [None, None]
+    z = torch.stack([F.normalize(w["z"].float(), dim=-1) for w in windows])  # [n, 2, D]
+    solo = [_solo(w) for w in windows]
+    wt = torch.tensor([[min(s, solo_cap) / solo_cap if s >= 0.5 else 0.0 for s in w["solo_s"]] for w in windows])
+    pair = np.zeros(n - 1, np.float64)  # (keep - cross) seconds of agreement with the next window
+    for t in range(n - 1):
+        off = (windows[t + 1]["start"] - windows[t]["start"]) // 320
+        a, b = solo[t][:, off:], solo[t + 1]
+        L = min(a.shape[1], b.shape[1])
+        if L <= 0:
+            continue
+        a, b = a[:, :L], b[:, :L]
+        keep = float((a[0] * b[0]).sum() + (a[1] * b[1]).sum())
+        cross = float((a[0] * b[1]).sum() + (a[1] * b[0]).sum())
+        pair[t] = overlap_w * (keep - cross) * 0.02
+    unary = np.zeros((n, 2))
+    t0 = int(wt.min(1).values.argmax())  # start from the window where both voices talk alone most
+    cent = z[t0].clone() if float(wt[t0].min()) > 0 else None
+    for it in range(iters + 1):
+        if cent is not None:
+            sim = torch.einsum("nsd,kd->nsk", z, cent)  # slot s vs centroid k
+            unary[:, 0] = emb_w * (wt[:, 0] * sim[:, 0, 0] + wt[:, 1] * sim[:, 1, 1]).numpy()
+            unary[:, 1] = emb_w * (wt[:, 0] * sim[:, 0, 1] + wt[:, 1] * sim[:, 1, 0]).numpy()
+        # Viterbi; state 0 keeps the window's order (slot 0 -> A), 1 swaps it
+        score = unary[0].copy()
+        back = np.zeros((n, 2), np.int64)
+        for t in range(1, n):
+            new = np.empty(2)
+            for s in (0, 1):
+                cand = [score[q] + (pair[t - 1] if q == s else -pair[t - 1]) for q in (0, 1)]
+                back[t, s] = int(np.argmax(cand))
+                new[s] = max(cand) + unary[t, s]
+            score = new
+        st = np.zeros(n, np.int64)
+        st[-1] = int(np.argmax(score))
+        for t in range(n - 1, 0, -1):
+            st[t - 1] = back[t, st[t]]
+        # centroids from the decoded order: A gets slot st, B slot 1 - st
+        ia = torch.from_numpy(st)
+        ar = torch.arange(n)
+        za = z[ar, ia] * wt[ar, ia].unsqueeze(-1)
+        zb = z[ar, 1 - ia] * wt[ar, 1 - ia].unsqueeze(-1)
+        cent = torch.stack([F.normalize(za.sum(0), dim=-1), F.normalize(zb.sum(0), dim=-1)])
+    for t, w in enumerate(windows):
+        w["assign"] = [int(st[t]), 1 - int(st[t])]
+        w["margin"] = float(abs(unary[t, 0] - unary[t, 1]) / max(emb_w, 1e-9))
+        w["confident"] = w["margin"] >= margin
+    return [cent[0], cent[1]]
+
+
 @torch.no_grad()
 def separate(model, x: np.ndarray, mem, device: str, win_s=8.0, hop_s=6.0, batch=8):
     n = len(x)
