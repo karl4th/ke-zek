@@ -260,6 +260,7 @@ def main():
     ap.add_argument("--stop-at", type=int, default=0)
     ap.add_argument("--bs", type=int, default=8, help="sequences per batch")
     ap.add_argument("--chunks", type=int, default=2, help="adjacent 4 s chunks per sequence")
+    ap.add_argument("--span-s", type=float, default=30.0, help="identity/activity context of block 1")
     ap.add_argument("--lr-enc", type=float, default=3e-4)
     ap.add_argument("--lr-sep", type=float, default=3e-4)
     ap.add_argument("--weights", default="", help="calibration.json; default 1/0.2/0.1/0.1")
@@ -315,7 +316,7 @@ def main():
             [f"{r}/RIRS_NOISES/simulated_rirs", f"{r}/RIRS_NOISES/real_rirs_isotropic_noises"],
             [f"{r}/musan/noise"], [f"{r}/musan/music"]))
     if a.overfit:
-        fixed = SpanSequences(train, a.overfit, seed=a.seed, chunks=a.chunks)
+        fixed = SpanSequences(train, a.overfit, seed=a.seed, chunks=a.chunks, span_s=a.span_s)
         items = [fixed[i] for i in range(a.overfit)]
 
         class Fixed(torch.utils.data.Dataset):
@@ -326,9 +327,10 @@ def main():
                 return items[i % a.overfit]
         train_set, val_set = Fixed(), fixed
     else:
-        train_set = SpanSequences(train, a.steps * a.bs, seed=a.seed, chunks=a.chunks, render=render)
+        train_set = SpanSequences(train, a.steps * a.bs, seed=a.seed, chunks=a.chunks, render=render,
+                                  span_s=a.span_s)
         val_set = SpanSequences(val, a.n_val, seed=20_000, chunks=a.chunks, gain_db=0.0, peak=(0.9, 0.9),
-                                render=render)
+                                render=render, span_s=a.span_s)
     ckpt_path = f"{a.out}/last.pt"
     ckpt = torch.load(ckpt_path, map_location="cpu") if a.resume and os.path.exists(ckpt_path) else None
     start = ckpt["step"] if ckpt else 0
