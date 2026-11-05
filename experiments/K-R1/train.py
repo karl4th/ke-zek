@@ -133,6 +133,8 @@ def main():
     ap.add_argument("--sir-jitter-db", type=float, default=3.0)
     ap.add_argument("--max-train-conversations", type=int, default=0)
     ap.add_argument("--split-file", default="", help="keep validation/test from this split.json")
+    ap.add_argument("--aug-root", default="", help="MUSAN + RIRS_NOISES: render windows as one mono recording")
+    ap.add_argument("--aug-val", action="store_true", help="also render the validation windows (held-out chain seeds)")
     ap.add_argument("--eval-every", type=int, default=2500)
     ap.add_argument("--n-val", type=int, default=400)
     ap.add_argument("--workers", type=int, default=4)
@@ -166,9 +168,22 @@ def main():
     ckpt = torch.load(ckpt_path, map_location="cpu") if a.resume and os.path.exists(ckpt_path) else None
     start = ckpt["step"] if ckpt else 0
 
+    render = None
+    if a.aug_root:
+        from render import Render
+
+        from kezek.augment import DomainBank
+
+        r = a.aug_root
+        bank = DomainBank.from_dirs(
+            [f"{r}/RIRS_NOISES/simulated_rirs", f"{r}/RIRS_NOISES/real_rirs_isotropic_noises"],
+            [f"{r}/musan/noise"], [f"{r}/musan/music"],
+        )
+        render = Render(bank)
+        print(f"render: {len(bank.rirs)} rirs, {len(bank.noises)} noises, {len(bank.music)} music", flush=True)
     train_set = RealWindows(
         train, a.steps * a.bs, seed=a.seed, p_overlap=a.p_overlap, sir_jitter_db=a.sir_jitter_db,
-        crop_s=a.crop_s,
+        crop_s=a.crop_s, render=render,
     )
     dl = torch.utils.data.DataLoader(
         torch.utils.data.Subset(train_set, range(start * a.bs, len(train_set))),
@@ -185,6 +200,9 @@ def main():
         "nat": RealWindows(val, a.n_val, seed=20_000, p_overlap=0.0, peak=(0.9, 0.9)),
         "ov": RealWindows(val, a.n_val, seed=30_000, p_overlap=1.0, peak=(0.9, 0.9)),
     }
+    if render is not None and a.aug_val:
+        val_sets["nat_rec"] = RealWindows(val, a.n_val, seed=60_000, p_overlap=0.0, peak=(0.9, 0.9), render=render)
+        val_sets["ov_rec"] = RealWindows(val, a.n_val, seed=70_000, p_overlap=1.0, peak=(0.9, 0.9), render=render)
 
     dev = a.device
     se = SpeakerEncoder(device=dev)

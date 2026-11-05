@@ -166,8 +166,10 @@ class RealWindows(torch.utils.data.Dataset):
         p_overlap: float = 0.5,
         sir_jitter_db: float = 0.0,
         peak: tuple[float, float] = (0.45, 0.9),
+        render=None,
     ):
         self.pairs, self.n, self.seed = list(pairs), n, seed
+        self.render = render  # render.Render: one mono recording chain per window, or None
         self.crop = int(round(crop_s * 100))
         self.enroll_s, self.gap = enroll_s, int(round(gap_s * 100))
         self.p_overlap, self.sir_jitter_db, self.peak = p_overlap, sir_jitter_db, peak
@@ -202,7 +204,17 @@ class RealWindows(torch.utils.data.Dataset):
                 break
         pieces.sort()
         enr = np.concatenate([c.audio(0, a, b) + c.audio(1, a, b) for a, b in pieces])
+        self._last_pieces = pieces
         return enr, got
+
+    def _rendered_enrollment(self, c: _Conversation, rec, rng) -> np.ndarray:
+        """The last enrollment, through the same recording chain as the window."""
+        pieces = self._last_pieces
+        ta = np.concatenate([c.audio(0, a, b) for a, b in pieces])
+        tb = np.concatenate([c.audio(1, a, b) for a, b in pieces])
+        mask = np.ones(len(ta), bool)
+        _, _, m = self.render.apply(rec, ta, tb, mask, rng)
+        return m
 
     @staticmethod
     def _level(c: _Conversation, side: int, x: np.ndarray, act: np.ndarray, g: float, rng) -> float:
@@ -241,7 +253,13 @@ class RealWindows(torch.utils.data.Dataset):
             act_t, act_o = c.act[side][fr].copy(), c.act[1 - side][fr].copy()
             if self.sir_jitter_db:
                 o = o * np.float32(10 ** (rng.uniform(-1, 1) * self.sir_jitter_db / 20))
-            mix = t + o
+            rec = None
+            if self.render is not None:
+                rec = self.render.sample(rng)
+                enr = self._rendered_enrollment(c, rec, rng)
+                t, o, mix = self.render.apply(rec, t, o, np.repeat(act_t | act_o, FRAME), rng)
+            else:
+                mix = t + o
             g = rng.uniform(*self.peak) / max(float(np.abs(mix).max()), 1e-4)
             t, o, mix = t * g, o * g, mix * g
             l_ref = self._level(c, side, t, act_t, g, rng)
@@ -250,6 +268,8 @@ class RealWindows(torch.utils.data.Dataset):
             # the other speaker's enrollment, for the wrong-speaker check in validation
             try:
                 enr_o, _ = self._enrollment(c, 1 - side, start, rng)
+                if rec is not None:
+                    enr_o = self._rendered_enrollment(c, rec, rng)
                 enr_o = enr_o * np.float32(0.9 / max(float(np.abs(enr_o).max()), 1e-4))
             except ValueError:
                 enr_o = enr
