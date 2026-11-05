@@ -13,7 +13,7 @@ cd "$repo"
 export PATH=$HOME/venv/bin:$PATH OMP_NUM_THREADS=1 PYTHONWARNINGS=ignore
 export AIRON_EXPERIMENT="K-V3-S1 stage 1: profiles and activity (WavLM + Conformer, 16 s)"
 ( bash "$here/get_aug.sh" > /data/get_aug.log 2>&1 ) &
-for i in 1 2 3; do bash "$here/get_data.sh" /data/oy16 8 >> /data/get_data.log 2>&1 && break; done
+for i in 1 2 3; do bash "$here/get_data.sh" /data/oy16 6 >> /data/get_data.log 2>&1 && break; done
 wait
 grep -q "AUG READY" /data/get_aug.log || { echo "aug download failed"; exit 1; }
 split=$repo/experiments/K-R1/split_round1.json

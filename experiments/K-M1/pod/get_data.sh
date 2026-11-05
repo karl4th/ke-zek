@@ -8,7 +8,7 @@ set -euo pipefail
 bucket=s3://manifestro-dataset-876108973178-us-east-1-an/datasets
 src=$bucket/open-yap-1k_2026-11-04_wav_0e7bcf1e_0d3abb77_16k-npy-act
 out=${1:-/data/oy16}
-jobs=${2:-8}
+jobs=${2:-6}
 mkdir -p "$out/.parts_done" /data/pack
 if ! aws s3 cp "$src/SHA256SUMS" "$out/SHA256SUMS" --only-show-errors 2>/dev/null; then
   echo "converted copy not readable: converting the source delivery"
@@ -21,12 +21,23 @@ if ! aws s3 cp "$src/SHA256SUMS" "$out/SHA256SUMS" --only-show-errors 2>/dev/nul
   echo "conversations: $(ls -d "$out"/conv_* | wc -l)"
   exit 0
 fi
-one() {
+one() {  # stream: S3 -> SHA-256 on the fly -> tar; a mismatch removes what the part wrote
   local sum=$1 file=$2
   [[ -e "$out/.parts_done/$file" ]] && return 0
-  aws s3 cp "$src/$file" "/data/pack/$file" --only-show-errors
-  echo "$sum  /data/pack/$file" | sha256sum -c --quiet - || { echo "SHA MISMATCH $file"; rm -f "/data/pack/$file"; return 1; }
-  tar xf "/data/pack/$file" -C "$out" && rm -f "/data/pack/$file" && touch "$out/.parts_done/$file"
+  aws s3 cp "$src/$file" - --only-show-errors \
+    | python3 -c 'import hashlib, sys
+h = hashlib.sha256()
+while b := sys.stdin.buffer.read(1 << 22):
+    h.update(b)
+    sys.stdout.buffer.write(b)
+open(sys.argv[1], "w").write(h.hexdigest())' "/data/pack/$file.sha" \
+    | tar xv -C "$out" > "/data/pack/$file.list"
+  if [[ "$(cat "/data/pack/$file.sha" 2>/dev/null)" != "$sum" ]]; then
+    echo "SHA MISMATCH $file"
+    (cd "$out" && cut -d/ -f1 "/data/pack/$file.list" | sort -u | xargs -r rm -rf)
+    return 1
+  fi
+  touch "$out/.parts_done/$file" && rm -f "/data/pack/$file.sha" "/data/pack/$file.list"
   echo "done $file"
 }
 export -f one
