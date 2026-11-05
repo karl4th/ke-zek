@@ -178,6 +178,7 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
     scores, si_all, si_ov, si_solo = [], [], [], []
     tp = fp = fn = 0.0
     swaps = swap_n = 0
+    id_ok, cos_same, cos_diff = [], [], []
     for i0 in range(0, len(dataset), batch):
         b = collate([dataset[i] for i in range(i0, min(i0 + batch, len(dataset)))])
         raw, o = objectives(model, b, dev, stage if stage != "e2e" else "e2e", 0.0, k, frames, amp)
@@ -188,6 +189,17 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
         else:
             perm_idx = (raw["bce"] + raw["nce"]).argmin(1).cpu().numpy()
         p_act = (torch.sigmoid(o["logits"]) > 0.5).float()
+        # identity: do the mono slot embeddings tell this span's two people apart, judged against
+        # their clean references from another window (activity labels decide which is which)?
+        zz, rr = o["z"].cpu(), o["r"].cpu()
+        lab_perm = raw["bce"].argmin(1).cpu().numpy()
+        for j in range(len(lab_perm)):
+            q = (0, 1) if lab_perm[j] == 0 else (1, 0)
+            same = float(zz[j, 0] @ rr[j, q[0]] + zz[j, 1] @ rr[j, q[1]]) / 2
+            diff = float(zz[j, 0] @ rr[j, q[1]] + zz[j, 1] @ rr[j, q[0]]) / 2
+            id_ok.append(same > diff)
+            cos_same.append(same)
+            cos_diff.append(diff)
         for j in range(len(perm_idx)):
             perm = (0, 1) if perm_idx[j] == 0 else (1, 0)
             pa = p_act[j]
@@ -218,6 +230,8 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
     model.train()
     out = {"act_precision": tp / max(tp + fp, 1e-9), "act_recall": tp / max(tp + fn, 1e-9)}
     out["act_f1"] = 2 * out["act_precision"] * out["act_recall"] / max(out["act_precision"] + out["act_recall"], 1e-9)
+    out.update({"id_accuracy": float(np.mean(id_ok)), "id_cos_same": float(np.mean(cos_same)),
+                "id_cos_other": float(np.mean(cos_diff))})
     if stage != "enc":
         out.update(metrics.aggregate(scores))
         out.update({
@@ -373,7 +387,7 @@ def main():
     def run_eval(step):
         nonlocal best_score
         m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp)
-        show = ("act_f1", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
+        show = ("act_f1", "id_accuracy", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
                 "other_solo_leak_db", "both_silent_db", "backchannel_recall", "chunk_swap_rate")
         print(f"EVAL step {step}: " + json.dumps({kk: round(m[kk], 3) for kk in show if kk in m}), flush=True)
         log.append({"step": step, **m})
