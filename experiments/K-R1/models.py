@@ -30,7 +30,9 @@ class Extractor(torch.nn.Module):
     def forward(self, mix: torch.Tensor, enr: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
         if self.arch == "kezek":
             return self.net(mix, d)
-        return self.net(mix, enr).waveform
+        # torch.stft has no bf16 kernel: the band-split model always runs in fp32
+        with torch.autocast(mix.device.type, enabled=False):
+            return self.net(mix.float(), enr.float()).waveform
 
 
 class SepTasNet(torch.nn.Module):
