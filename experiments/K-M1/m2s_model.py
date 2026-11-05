@@ -24,27 +24,93 @@ from kezek.model import KezekTSE
 HOP = 160  # 10 ms mel hop; frames are 20 ms after the strided convolution
 
 
+class FrozenFeatures(nn.Module):
+    """Frozen pretrained speech features on the 20 ms grid: [B, T] at 16 kHz -> [B, D, F20].
+
+    * ``wavlm``: WavLM Base+ (torchaudio), learned softmax-weighted sum of its layers, 50 Hz;
+    * ``mimi``: Mimi codec encoder latents before quantization (12.5 Hz, 512-D), input
+      resampled to 24 kHz, each frame repeated 4x onto the 20 ms grid.
+    The backbone is never trained and not saved with the encoder (only the layer weights are).
+    """
+
+    def __init__(self, kind: str):
+        super().__init__()
+        self.kind = kind
+        if kind == "wavlm":
+            import torchaudio
+
+            bundle = torchaudio.pipelines.WAVLM_BASE_PLUS
+            self._net = [bundle.get_model().eval()]
+            self.dim = 768
+            self.layer_w = nn.Parameter(torch.zeros(13))
+        elif kind == "mimi":
+            from transformers import MimiModel
+
+            self._net = [MimiModel.from_pretrained("kyutai/mimi").eval()]
+            self.dim = 512
+        else:
+            raise ValueError(kind)
+        for p in self._net[0].parameters():
+            p.requires_grad_(False)
+
+    def forward(self, wav: torch.Tensor) -> torch.Tensor:
+        net = self._net[0]
+        if next(net.parameters()).device != wav.device:  # kept outside the module tree
+            net.to(wav.device)
+        n20 = wav.shape[-1] // (2 * HOP)
+        with torch.no_grad(), torch.autocast(wav.device.type, enabled=False):
+            if self.kind == "wavlm":
+                layers, _ = net.extract_features(wav.float())
+                hs = torch.stack(layers, 0)  # [L, B, F, D]
+            else:
+                import torchaudio.functional as AF
+
+                x = AF.resample(wav.float(), 16_000, 24_000)[:, None]
+                e = net.encoder(x)
+                e = net.encoder_transformer(e.transpose(1, 2)).last_hidden_state.transpose(1, 2)
+                e = net.downsample(e)  # [B, 512, F12.5]
+        if self.kind == "wavlm":
+            f = (torch.softmax(self.layer_w, 0)[:, None, None, None] * hs).sum(0).transpose(1, 2)
+        else:
+            f = e.repeat_interleave(4, dim=-1)
+        if f.shape[-1] < n20:
+            f = F.pad(f, (0, n20 - f.shape[-1]), mode="replicate")
+        return f[..., :n20].float()
+
+
 class IdentityEncoder(nn.Module):
-    def __init__(self, n_mels: int = 80, width: int = 256, layers: int = 3, emb: int = 128, speaker=None):
+    def __init__(self, n_mels: int = 80, width: int = 256, layers: int = 3, emb: int = 128, speaker=None,
+                 features: str = "mel"):
         super().__init__()
         self._speaker = [speaker]  # not a submodule: frozen, not saved with the encoder
         self.solo_threshold = 0.0  # > 0: the speaker encoder sees only confidently solo frames
         self.dim = speaker.dim if speaker is not None else emb
-        import torchaudio
+        self.features = features
+        if features == "mel":
+            import torchaudio
 
-        self.mel = torchaudio.transforms.MelSpectrogram(16_000, n_fft=400, hop_length=HOP, n_mels=n_mels)
-        self.front = nn.Sequential(
-            nn.Conv1d(n_mels, width, 5, padding=2), nn.GELU(),
-            nn.Conv1d(width, width, 3, stride=2, padding=1), nn.GELU(),
-        )
+            self.mel = torchaudio.transforms.MelSpectrogram(16_000, n_fft=400, hop_length=HOP, n_mels=n_mels)
+            self.front = nn.Sequential(
+                nn.Conv1d(n_mels, width, 5, padding=2), nn.GELU(),
+                nn.Conv1d(width, width, 3, stride=2, padding=1), nn.GELU(),
+            )
+        else:
+            self.ssl = FrozenFeatures(features)
+            self.front = nn.Sequential(
+                nn.Conv1d(self.ssl.dim, width, 3, padding=1), nn.GELU(),
+            )
         self.rnn = nn.LSTM(width, width, num_layers=layers, batch_first=True, bidirectional=True)
         self.act = nn.Linear(2 * width, 2)
         self.emb = nn.Linear(2 * width, emb)
 
     def frames(self, wav: torch.Tensor):
-        with torch.autocast(wav.device.type, enabled=False):
-            m = self.mel(wav.float()).clamp_min(1e-8).log()
-            m = m - m.mean(dim=-1, keepdim=True)
+        if self.features == "mel":
+            with torch.autocast(wav.device.type, enabled=False):
+                m = self.mel(wav.float()).clamp_min(1e-8).log()
+                m = m - m.mean(dim=-1, keepdim=True)
+        else:
+            m = self.ssl(wav)
+            m = (m - m.mean(-1, keepdim=True)) / (m.std(-1, keepdim=True) + 1e-5)
         h = self.front(m).transpose(1, 2)
         with torch.autocast(wav.device.type, enabled=False):  # no fast bf16 LSTM kernel
             h, _ = self.rnn(h.float())
