@@ -8,6 +8,8 @@ weighted values separately.
            plus multi-resolution STFT magnitude L1 (scale-sensitive; normalized by the mixture's
            magnitude, since the target's is ~0 when that person is silent). Mean over valid windows
            (target active >= 0.5 s) for SI-SDR, over all windows for the STFT term.
+           Plus the level error on the target's short replies (< 1 s), which the SI-SDR term
+           (>= 0.5 s of target) hardly sees: without it the separator learned to drop them.
 * L_act  = BCE of slot activity against source activity (20 ms frames) plus the bounded
            energy penalty of an output where its speaker is silent:
            clamp(10 log10(E_out / L_ref) + 30, 0, 30) / 30, edges excluded.
@@ -54,6 +56,32 @@ def mr_stft_l1(y, s, x, eps=1e-6):
         Y, S, X = (torch.stft(v.float(), n_fft, hop, window=win, return_complex=True).abs() for v in (y, s, x))
         out = out + (Y - S).abs().mean((-1, -2)) / (X.mean((-1, -2)) + eps)
     return out / len(RESOLUTIONS)
+
+
+def short_reply_level(y, s, act, max_frames: int = 100):
+    """Level error on the target's short replies ("mhm", "yeah"; runs under 1 s after closing
+    gaps < 0.3 s): mean over runs of |10 log10(E_out / E_target)| / 10, capped at 3 (30 dB).
+    The SI-SDR term needs >= 0.5 s of target speech and so barely sees them. [N], valid [N]."""
+    from kezek.metrics import short_runs
+
+    a = act.bool().cpu().numpy()
+    vals, valid = [], []
+    yf, sf = y.float(), s.float()
+    for j in range(a.shape[0]):
+        runs = short_runs(a[j], max_frames)
+        if not runs:
+            vals.append(y.new_zeros(()))
+            valid.append(False)
+            continue
+        errs = []
+        for r0, r1 in runs:
+            seg = slice(r0 * FRAME, r1 * FRAME)
+            e_out = (yf[j, seg] ** 2).mean() + 1e-10
+            e_tgt = (sf[j, seg] ** 2).mean() + 1e-10
+            errs.append((10 * torch.log10(e_out / e_tgt)).abs().clamp(max=30) / 10)
+        vals.append(torch.stack(errs).mean())
+        valid.append(True)
+    return torch.stack(vals), torch.tensor(valid, device=y.device)
 
 
 def silence_energy(y, act, disputed, l_ref):

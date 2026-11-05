@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
 import tracker  # noqa: E402
 from m2s_data import SpanSequences, collate  # noqa: E402
 from m2s_losses import (  # noqa: E402
-    info_nce, masked_mean, mixture_l1, mr_stft_l1, neg_sisdr_active, silence_energy,
+    info_nce, masked_mean, mixture_l1, mr_stft_l1, neg_sisdr_active, short_reply_level, silence_energy,
 )
 from m2s_model import ConditionedSeparator, IdentityEncoder, frames_20ms  # noqa: E402
 from rdata import split_ids, splits  # noqa: E402
@@ -118,11 +118,11 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp):
         y = model.sep(sep_in, sep_z)
     y = y.float().view(B, k, 2, n)
 
-    si, stft, sil, o2s = [], [], [], []
+    si, stft, sil, o2s, short = [], [], [], [], []
     solo = act_c & ~act_c.flip(2)  # [B, k, 2, F]
     emb_y = model.enc.embed_single(y.reshape(-1, n)).view(B, k, 2, -1)
     for p in ((0, 1), (1, 0)):
-        t_si, t_stft, t_sil, t_o2s = [], [], [], []
+        t_si, t_stft, t_sil, t_o2s, t_short = [], [], [], [], []
         for i in (0, 1):
             s = p[i]
             yi, si_ = y[:, :, i].reshape(-1, n), src_c[:, :, s].reshape(-1, n)
@@ -130,6 +130,8 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp):
             v, valid = neg_sisdr_active(yi, si_, a_s)
             t_si.append(masked_mean(v.view(B, k), valid.view(B, k)))
             t_stft.append(mr_stft_l1(yi, si_, mix_c.reshape(-1, n)).view(B, k).mean(1))
+            sv, svalid = short_reply_level(yi, si_, a_s)
+            t_short.append(masked_mean(sv.view(B, k), svalid.view(B, k)))
             pen, pv = silence_energy(yi, a_s, disp_c.reshape(-1, disp_c.shape[-1]),
                                      l_ref[:, s, None].expand(B, k).reshape(-1))
             t_sil.append(masked_mean(pen.view(B, k), pv.view(B, k)))
@@ -139,7 +141,9 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp):
         stft.append((t_stft[0] + t_stft[1]) / 2)
         sil.append((t_sil[0] + t_sil[1]) / 2)
         o2s.append((t_o2s[0] + t_o2s[1]) / 2)
+        short.append((t_short[0] + t_short[1]) / 2)
     raw.update({
+        "short": torch.stack(short, 1),
         "sisdr": torch.stack(si, 1), "stft": torch.stack(stft, 1),
         "silence": torch.stack(sil, 1), "out2slot": torch.stack(o2s, 1),
     })
@@ -153,7 +157,7 @@ def combine(raw, w, stage):
     """Per-permutation objectives -> L_sep, L_act, L_id ([B, 2]) and L_mix ([B])."""
     terms = {"act": raw["bce"], "id": raw["nce"]}
     if stage != "enc":
-        terms["sep"] = raw["sisdr"] + raw["stft"]
+        terms["sep"] = raw["sisdr"] + raw["stft"] + raw["short"]
         terms["act"] = raw["bce"] + raw["silence"]
         terms["id"] = raw["nce"] + raw["out2slot"]
     total = sum(w[t] * v for t, v in terms.items())
