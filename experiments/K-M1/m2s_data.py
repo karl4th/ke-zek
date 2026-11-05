@@ -55,8 +55,10 @@ class SpanSequences(torch.utils.data.Dataset):
         ref_s: float = 6.0,
         gain_db: float = 3.0,
         peak: tuple[float, float] = (0.45, 0.9),
+        render=None,
     ):
         self.pairs, self.n, self.seed = list(pairs), n, seed
+        self.render = render  # K-R1 render.Render: the span as one mono recording, or None
         self.span, self.chunk, self.k = int(span_s * 100), int(chunk_s * 100), chunks
         self.ref = int(ref_s * 100)
         self.gain_db, self.peak = gain_db, peak
@@ -114,10 +116,24 @@ class SpanSequences(torch.utils.data.Dataset):
             a, b = c.audio(0, start, start + self.span), c.audio(1, start, start + self.span)
             ga, gb = (10 ** (rng.uniform(-1, 1, 2) * self.gain_db / 20)).astype(np.float32)
             sa, sb = a * ga, b * gb
-            x = sa + sb
+            exact = True
+            if self.render is not None:
+                # one recording chain for the span; references of each person from another window
+                # go through the same chain (alone), as a clip cut from that recording would
+                rec = self.render.sample(rng)
+                speech = np.repeat(act[0] | act[1], FRAME)[: len(sa)]
+                sa, sb, x = self.render.apply(rec, sa, sb, speech, rng)
+                z = np.zeros_like(refs[0])
+                refs = [self.render.apply(rec, r, z, np.ones(len(r), bool), rng)[2] for r in refs]
+                refs = [r * np.float32(0.5 / max(float(np.abs(r).max()), 1e-4)) for r in refs]
+                exact = rec.chain.noise is None and rec.chain.music is None and rec.chain.codec is None \
+                    and rec.chain.clip_over_db is None
+            else:
+                x = sa + sb
             cf = np.float32(rng.uniform(*self.peak) / max(float(np.abs(x).max()), 1e-4))
             sa, sb, x = sa * cf, sb * cf, x * cf
-            assert float(np.abs(x - (sa + sb)).max()) < 1e-5, "mixture is not the sum of sources"
+            if exact:
+                assert float(np.abs(x - (sa + sb)).max()) < 1e-4, "mixture is not the sum of sources"
             levels = []
             for src, ac in ((sa, act[0]), (sb, act[1])):
                 m = np.repeat(ac, FRAME)

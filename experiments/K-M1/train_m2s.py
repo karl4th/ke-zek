@@ -270,6 +270,7 @@ def main():
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--amp", action="store_true")
+    ap.add_argument("--aug-root", default="", help="MUSAN + RIRS_NOISES: render spans as mono recordings")
     ap.add_argument("--features", choices=("mel", "wavlm", "mimi"), default="mel",
                     help="input of the activity network in block 1")
     ap.add_argument("--solo-threshold", type=float, default=0.0,
@@ -302,6 +303,17 @@ def main():
     json.dump({"args": vars(a), "weights": w}, open(f"{a.out}/manifest.json", "w"), indent=1)
     frames = 400
 
+    render = None
+    if a.aug_root:
+        sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
+        from render import Render
+
+        from kezek.augment import DomainBank
+
+        r = a.aug_root
+        render = Render(DomainBank.from_dirs(
+            [f"{r}/RIRS_NOISES/simulated_rirs", f"{r}/RIRS_NOISES/real_rirs_isotropic_noises"],
+            [f"{r}/musan/noise"], [f"{r}/musan/music"]))
     if a.overfit:
         fixed = SpanSequences(train, a.overfit, seed=a.seed, chunks=a.chunks)
         items = [fixed[i] for i in range(a.overfit)]
@@ -314,8 +326,9 @@ def main():
                 return items[i % a.overfit]
         train_set, val_set = Fixed(), fixed
     else:
-        train_set = SpanSequences(train, a.steps * a.bs, seed=a.seed, chunks=a.chunks)
-        val_set = SpanSequences(val, a.n_val, seed=20_000, chunks=a.chunks, gain_db=0.0, peak=(0.9, 0.9))
+        train_set = SpanSequences(train, a.steps * a.bs, seed=a.seed, chunks=a.chunks, render=render)
+        val_set = SpanSequences(val, a.n_val, seed=20_000, chunks=a.chunks, gain_db=0.0, peak=(0.9, 0.9),
+                                render=render)
     ckpt_path = f"{a.out}/last.pt"
     ckpt = torch.load(ckpt_path, map_location="cpu") if a.resume and os.path.exists(ckpt_path) else None
     start = ckpt["step"] if ckpt else 0
