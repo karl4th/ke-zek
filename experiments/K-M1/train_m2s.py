@@ -240,6 +240,7 @@ def main():
     ap.add_argument("--lr-sep", type=float, default=3e-4)
     ap.add_argument("--weights", default="", help="calibration.json; default 1/0.2/0.1/0.1")
     ap.add_argument("--calibrate", type=int, default=0)
+    ap.add_argument("--eval-only", action="store_true", help="validate --init-model and exit")
     ap.add_argument("--eval-every", type=int, default=500)
     ap.add_argument("--n-val", type=int, default=96)
     ap.add_argument("--workers", type=int, default=4)
@@ -324,6 +325,15 @@ def main():
         opt.load_state_dict(ckpt["opt"])
         sched.load_state_dict(ckpt["sched"])
         log, best_score = ckpt["log"], ckpt.get("best_score", -1e9)
+
+    if a.eval_only:
+        if a.init_model:
+            state = torch.load(a.init_model, map_location="cpu")
+            model.sep.load_state_dict(state["sep"])
+        m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp)
+        json.dump(m, open(f"{a.out}/eval_only.json", "w"), indent=1)
+        print("EVAL ONLY", json.dumps({kk: round(v, 3) for kk, v in m.items() if isinstance(v, float)}), flush=True)
+        return
 
     if a.calibrate:
         # gradient norm of each unit-weight objective over the trainable parameters
