@@ -126,7 +126,7 @@ def tse_scores(models: dict, bench: str, episodes: list, dev: str):
 
 
 def s1_scores(models: dict, bench: str, episodes: list, dev: str, win_s: float, hop_s: float):
-    from m2s_infer import build_memory, identity_pass, load as load_model, memory_activity
+    from m2s_infer import identity_pass, link_windows, load as load_model, memory_activity
 
     out = {}
     for name, path in models.items():
@@ -136,7 +136,7 @@ def s1_scores(models: dict, bench: str, episodes: list, dev: str, win_s: float, 
             for c in ep["clips"]:
                 x = load(f"{bench}/{c['file']}")
                 w = identity_pass(m, x, dev, win_s=win_s, hop_s=hop_s)
-                build_memory(w)
+                link_windows(w)
                 p = memory_activity(w, len(x)) > 0.5
                 n = p.shape[1]
                 e = energy(np.pad(x, (0, max(0, n * 320 - len(x)))), 320)[:n]

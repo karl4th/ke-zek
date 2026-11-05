@@ -207,7 +207,7 @@ def separate(model, x: np.ndarray, mem, device: str, win_s=8.0, hop_s=6.0, batch
 
 def run(model, x: np.ndarray, device: str):
     windows = identity_pass(model, x, device)
-    mem = build_memory(windows)
+    mem = link_windows(windows)
     if mem[0] is None:
         return np.zeros((2, len(x)), np.float32), {"error": "no confident voice found", "windows": len(windows)}
     y = separate(model, x, mem, device)

@@ -85,7 +85,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--step", type=int, default=0, help="training step of the model (tracker x axis)")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--linker", choices=("memory", "global"), default="memory",
+    ap.add_argument("--linker", choices=("memory", "global"), default="global",
                     help="greedy slot memory or global Viterbi linking (m2s_infer.link_windows)")
     ap.add_argument("--cache", default="", help="directory of identity-pass windows per conversation "
                     "(written on the first run, reused after: relinking needs no model)")
