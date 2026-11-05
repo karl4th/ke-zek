@@ -175,8 +175,12 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
     for i0 in range(0, len(dataset), batch):
         b = collate([dataset[i] for i in range(i0, min(i0 + batch, len(dataset)))])
         raw, o = objectives(model, b, dev, stage if stage != "e2e" else "e2e", 0.0, k, frames, amp)
-        # one permutation per span from the mono path: activity + identity agreement
-        perm_idx = (raw["bce"] + raw["nce"]).argmin(1).cpu().numpy()
+        # one permutation per span. In the separator stage the slots are the clean references in
+        # speaker order; otherwise block 1's mono path decides (activity + identity agreement).
+        if stage == "sep":
+            perm_idx = np.zeros(len(b["conv"]), dtype=int)
+        else:
+            perm_idx = (raw["bce"] + raw["nce"]).argmin(1).cpu().numpy()
         p_act = (torch.sigmoid(o["logits"]) > 0.5).float()
         for j in range(len(perm_idx)):
             perm = (0, 1) if perm_idx[j] == 0 else (1, 0)
