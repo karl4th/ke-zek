@@ -31,6 +31,7 @@ from validate import validate  # noqa: E402
 
 import torch.nn.functional as F  # noqa: E402
 
+from kezek import realtest  # noqa: E402
 from kezek.losses import frames_to_samples, kt1_loss, residual_db, snr_tau  # noqa: E402
 from kezek.model import SpeakerEncoder, si_sdr_loss  # noqa: E402
 
@@ -186,6 +187,10 @@ def main():
     ap.add_argument("--render-version", type=int, choices=(1, 2), default=1,
                     help="1: K-T1 chain + bleed + compression 0.5/2-6; 2: + recording EQ, compression 0.7/2-10")
     ap.add_argument("--real-clip", default="", help="single-speaker real recording checked at every eval")
+    ap.add_argument(
+        "--realtest", default="", help="real podcast pack (HF dataset or folder), checked every eval"
+    )
+    ap.add_argument("--realtest-max-s", type=float, default=600, help="seconds scored per podcast")
     ap.add_argument("--eval-every", type=int, default=2500)
     ap.add_argument("--n-val", type=int, default=400)
     ap.add_argument("--workers", type=int, default=4)
@@ -261,6 +266,7 @@ def main():
 
     dev = a.device
     se = SpeakerEncoder(device=dev)
+    rt_pack = realtest.load_pack(a.realtest, a.realtest_max_s) if a.realtest else None
     model = Extractor(a.arch).to(dev)
     if a.init:
         model.net.load_state_dict(torch.load(a.init, map_location="cpu"))
@@ -289,6 +295,15 @@ def main():
         )
         if a.real_clip:
             m.update(real_check(model, se, a.real_clip, dev))
+        if rt_pack:
+            was = model.training
+            model.eval()
+            with torch.no_grad():
+                m.update(realtest.evaluate(
+                    lambda mix, e, d: model(mix, e.expand(len(mix), -1), d.expand(len(mix), -1)),
+                    se, rt_pack, dev,
+                ))
+            model.train(was)
         short = {f"{n}/{k}": round(m[f"{n}/{k}"], 3) for n in val_sets for k in keep}
         short.update({k: m[k] for k in m if k.startswith("real/")})
         print(f"EVAL step {step}: {json.dumps(short)}", flush=True)
