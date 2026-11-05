@@ -24,6 +24,7 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import tracker  # noqa: E402
 from block import assign, separate_long  # noqa: E402
 from models import BandSep, Extractor, PretrainedSep, SepTasNet  # noqa: E402
 from rdata import _Conversation, _runs, disputed_frames, splits  # noqa: E402
@@ -55,6 +56,18 @@ def mono_long(model, mix, enr, d, device, win_s=4.0, hop_s=3.0, batch=16):
             out[s : s + len(yy)] += yy * w
             wsum[s : s + len(yy)] += w
     return out / np.maximum(wsum, 1e-6)
+
+
+def log_result(path: str, result: dict) -> None:
+    """One Airon run per evaluation: the pooled metrics and their 95% interval bounds."""
+    name = f"k-r1-long-{result['split']}-{os.path.splitext(os.path.basename(path))[0]}"
+    config = {k: v for k, v in result.items() if not isinstance(v, (dict, list))}
+    run = tracker.init(name, config, ["long-eval", result["split"], result["method"]], 1)
+    values = {k: v for k, v in result.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    for k, (lo, hi) in ((k, v) for k, v in result.get("ci", {}).items() if len(v) == 2):
+        values[f"{k}_ci_lo"], values[f"{k}_ci_hi"] = lo, hi
+    tracker.log(run, values, 0)
+    tracker.finish(run)
 
 
 def main():
@@ -203,6 +216,7 @@ def main():
     json.dump(scores, open(a.out.replace(".json", "_items.json"), "w"))
     if diag:
         json.dump(diag, open(a.out.replace(".json", "_runs.json"), "w"))
+    log_result(a.out, out)
     keys = ("overlap_sisdri", "target_solo_sisdr", "target_solo_level_db", "other_solo_leak_db",
             "both_silent_db", "backchannel_recall", "backchannel_n")
     print(json.dumps({k: round(out[k], 3) for k in keys}), flush=True)
