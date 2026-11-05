@@ -3,11 +3,10 @@
     python experiments/K-M1/m2s_infer.py --model model.pt --input mono.wav --out-dir out/
 
 1. Identity pass: 30 s windows with a 15 s hop give slot activity and two slot embeddings each.
-2. Slot memory: initialized from the first window with two distinct, confidently solo voices
-   (>= 2 s each, embedding cosine < ``distinct``); a voice that appears later fills slot B once a
-   window shows it. Each window's slots are matched to the memory (the better of the two
-   orders); with margin >= ``margin`` the memory takes an EMA step from slots with >= 1 s of
-   solo speech, otherwise the memory is frozen and the window is flagged uncertain.
+2. Linking (``link_windows``): the slot order of every window is decided jointly by Viterbi
+   from overlap continuity between neighbours and slot embeddings against two recording
+   centroids. The older greedy slot memory (``build_memory``) is kept for comparison: it drifts
+   and swaps A/B on long recordings.
 3. Separation: 8 s chunks with 2 s overlap, conditioned on the final memory embeddings (fixed for
    the whole recording, so the A/B mapping cannot change inside it), cross-faded.
 Outputs keep the input's sample count; the manifest lists windows, their assignment, margin,
