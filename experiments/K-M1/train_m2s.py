@@ -353,7 +353,7 @@ def main():
     def run_eval(step):
         nonlocal best_score
         m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp)
-        show = ("act_f1", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr",
+        show = ("act_f1", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
                 "other_solo_leak_db", "both_silent_db", "backchannel_recall", "chunk_swap_rate")
         print(f"EVAL step {step}: " + json.dumps({kk: round(m[kk], 3) for kk in show if kk in m}), flush=True)
         log.append({"step": step, **m})
