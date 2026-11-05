@@ -35,7 +35,7 @@ def init(name: str, config: dict, tags: list[str], total_steps: int):
         return airon.init(
             project="kezek",
             name=name,
-            experiment="K-R1",
+            experiment=os.environ.get("AIRON_EXPERIMENT", "3ef187b1-0e4f-4aa0-9193-b37cc6efeb64"),
             config=config,
             tags=["K-R1", *tags],
             total_steps=total_steps,
