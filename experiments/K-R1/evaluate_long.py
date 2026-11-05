@@ -75,6 +75,8 @@ def main():
     ap.add_argument("--oracle-assign", action="store_true", help="block: label runs by the clean tracks")
     ap.add_argument("--same-cos", type=float, default=0.5, help="block: one-voice check")
     ap.add_argument("--split", choices=("val", "test"), default="val")
+    ap.add_argument("--split-file", default="", help="validation/test from this split.json")
+    ap.add_argument("--mono-win-s", type=float, default=4.0, help="mono: inference window, seconds")
     ap.add_argument("--final", action="store_true")
     ap.add_argument("--excerpt-s", type=float, default=60.0)
     ap.add_argument("--enroll-s", type=float, default=20.0)
@@ -86,7 +88,7 @@ def main():
     a = ap.parse_args()
     if a.split == "test" and not a.final:
         raise SystemExit("the test split is read only with --final")
-    _, val, test = splits(a.data)
+    _, val, test = splits(a.data, split_file=a.split_file or None)
     pairs = val if a.split == "val" else test
     if a.max_conversations:
         pairs = pairs[: a.max_conversations]
@@ -142,7 +144,8 @@ def main():
             if a.method == "mixture":
                 est = mix
             elif a.method == "mono":
-                est = mono_long(model, mix, enr, d, dev)
+                est = mono_long(model, mix, enr, d, dev, win_s=a.mono_win_s,
+                                hop_s=a.mono_win_s * 0.75)
             else:
                 hint = mono_long(tse, mix, enr, d, dev) if a.method == "hybrid" else None
                 if a.method == "oracle_block":  # the clean tracks stand in for the separator

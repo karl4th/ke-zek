@@ -132,6 +132,7 @@ def main():
     ap.add_argument("--crop-s", type=float, default=4.0, help="training window, seconds")
     ap.add_argument("--sir-jitter-db", type=float, default=3.0)
     ap.add_argument("--max-train-conversations", type=int, default=0)
+    ap.add_argument("--split-file", default="", help="keep validation/test from this split.json")
     ap.add_argument("--eval-every", type=int, default=2500)
     ap.add_argument("--n-val", type=int, default=400)
     ap.add_argument("--workers", type=int, default=4)
@@ -146,7 +147,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     torch.manual_seed(a.seed)
     torch.backends.cudnn.benchmark = True
-    train, val, test = splits(a.data)
+    train, val, test = splits(a.data, split_file=a.split_file or None)
     ids = split_ids((train, val, test))
     if a.max_train_conversations:
         rng = np.random.default_rng(a.seed)

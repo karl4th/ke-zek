@@ -46,7 +46,33 @@ def scan(root: str | Path) -> list[ConversationPair]:
     return pairs
 
 
-def splits(root: str | Path, seed: int = 42, fractions=(0.8, 0.1, 0.1)):
+def fixed_splits(root: str | Path, split_file: str | Path):
+    """Validation and test exactly as in ``split_file``; train is every other conversation
+    whose speakers appear in neither (data added later can only grow train)."""
+    ids = json.loads(Path(split_file).read_text())
+    pairs = {p.conversation_id: p for p in scan(root)}
+    missing = [c for n in ("val", "test") for c in ids[n] if c not in pairs]
+    if missing:
+        raise ValueError(f"{len(missing)} validation/test conversations are missing, e.g. {missing[:3]}")
+    val = [pairs[c] for c in ids["val"]]
+    test = [pairs[c] for c in ids["test"]]
+    held = {c for c in ids["val"] + ids["test"]}
+    held_speakers = {s for p in val + test for s in p.speaker_ids}
+    train = sorted(
+        (p for c, p in pairs.items() if c not in held and not p.speaker_ids & held_speakers),
+        key=lambda p: p.conversation_id,
+    )
+    check_speaker_disjoint(train, val, test)
+    return train, val, test
+
+
+def splits(root: str | Path, seed: int = 42, fractions=(0.8, 0.1, 0.1), split_file=None):
+    if split_file:
+        return fixed_splits(root, split_file)
+    return _connected_splits(root, seed, fractions)
+
+
+def _connected_splits(root: str | Path, seed: int = 42, fractions=(0.8, 0.1, 0.1)):
     """Speaker-disjoint train / validation / test over connected identity groups.
 
     Speakers recur across Open Yap conversations, so most conversations form one connected
