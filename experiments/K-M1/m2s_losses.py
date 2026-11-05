@@ -5,7 +5,8 @@ trainer applies the calibrated weights, chooses one permutation per sequence, an
 weighted values separately.
 
 * L_sep  = -SI-SDR(y, s) on the active part of the target, fp32 with eps, in units of 10 dB,
-           plus multi-resolution STFT magnitude L1 (scale-sensitive). Mean over valid windows
+           plus multi-resolution STFT magnitude L1 (scale-sensitive; normalized by the mixture's
+           magnitude, since the target's is ~0 when that person is silent). Mean over valid windows
            (target active >= 0.5 s) for SI-SDR, over all windows for the STFT term.
 * L_act  = BCE of slot activity against source activity (20 ms frames) plus the bounded
            energy penalty of an output where its speaker is silent:
@@ -44,13 +45,14 @@ def neg_sisdr_active(y, s, act, eps=1e-8):
     return -si.clamp(-50, 50) / 10, valid  # clamp only guards Inf/NaN on degenerate windows
 
 
-def mr_stft_l1(y, s, eps=1e-6):
+def mr_stft_l1(y, s, x, eps=1e-6):
+    """Mean |Y - S| over time-frequency, per window, normalized by the mean |X| of the mixture
+    (the target's own magnitude is ~0 when that person is silent)."""
     out = 0.0
     for n_fft, hop in RESOLUTIONS:
         win = torch.hann_window(n_fft, device=y.device)
-        Y = torch.stft(y.float(), n_fft, hop, window=win, return_complex=True).abs()
-        S = torch.stft(s.float(), n_fft, hop, window=win, return_complex=True).abs()
-        out = out + (Y - S).abs().mean((-1, -2)) / (S.mean((-1, -2)) + eps)
+        Y, S, X = (torch.stft(v.float(), n_fft, hop, window=win, return_complex=True).abs() for v in (y, s, x))
+        out = out + (Y - S).abs().mean((-1, -2)) / (X.mean((-1, -2)) + eps)
     return out / len(RESOLUTIONS)
 
 

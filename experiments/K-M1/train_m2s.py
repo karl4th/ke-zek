@@ -128,7 +128,7 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp):
             a_s = act_c[:, :, s].reshape(-1, act_c.shape[-1])
             v, valid = neg_sisdr_active(yi, si_, a_s)
             t_si.append(masked_mean(v.view(B, k), valid.view(B, k)))
-            t_stft.append(mr_stft_l1(yi, si_).view(B, k).mean(1))
+            t_stft.append(mr_stft_l1(yi, si_, mix_c.reshape(-1, n)).view(B, k).mean(1))
             pen, pv = silence_energy(yi, a_s, disp_c.reshape(-1, disp_c.shape[-1]),
                                      l_ref[:, s, None].expand(B, k).reshape(-1))
             t_sil.append(masked_mean(pen.view(B, k), pv.view(B, k)))
