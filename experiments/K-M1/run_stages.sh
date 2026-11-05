@@ -14,7 +14,8 @@ e2e_steps=${8:-3000}
 here=$(cd "$(dirname "$0")" && pwd)
 export AIRON_EXPERIMENT="K-M1 two-block Kezek on Open Yap"
 tag=h${hours}
-common=(--data "$data" --split-file "$split" --train-hours "$hours" --amp --workers 3)
+common=(--data "$data" --split-file "$split" --train-hours "$hours" --amp --workers 3
+        --slot-embedding "${SLOTS:-ecapa}" --solo-threshold "${SOLO:-0.5}")
 
 stage() {  # name, batch for calibration, extra (shared by calibration and training)
   local name=$1 cal_bs=$2
