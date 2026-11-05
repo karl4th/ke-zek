@@ -43,6 +43,16 @@ def category_frames(act_a: np.ndarray, act_b: np.ndarray) -> dict[str, np.ndarra
     return out
 
 
+def backchannel_frames(act_s: np.ndarray, act_o: np.ndarray, max_len: int = 100, near: int = 50) -> np.ndarray:
+    """Frames of short replies of one person (10 ms grid): runs shorter than ``max_len`` frames
+    (1 s) with the other person speaking inside the run or within ``near`` frames (0.5 s) of it."""
+    out = np.zeros(len(act_s), bool)
+    for a, b in _runs(act_s):
+        if b - a < max_len and act_o[max(0, a - near):b + near].any():
+            out[a:b] = True
+    return out
+
+
 class SpanSequences(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -144,6 +154,7 @@ class SpanSequences(torch.utils.data.Dataset):
                 "src": np.stack([sa, sb]).astype(np.float32),
                 "act": act,
                 "disputed": disputed_frames(act[0], act[1]),
+                "bc": np.stack([backchannel_frames(act[0], act[1]), backchannel_frames(act[1], act[0])]),
                 "seq_start": np.int64(s0),
                 "ref": np.stack(refs).astype(np.float32),
                 "l_ref": np.asarray(levels, np.float32),

@@ -36,7 +36,7 @@ from m2s_losses import (  # noqa: E402
     info_nce, masked_mean, mixture_l1, mr_stft_l1, neg_sisdr_active, short_reply_level, silence_energy,
 )
 from m2s_model import ConditionedSeparator, IdentityEncoder, frames_20ms  # noqa: E402
-from rdata import split_ids, splits  # noqa: E402
+from rdata import _runs, split_ids, splits  # noqa: E402
 
 from kezek import metrics  # noqa: E402
 
@@ -45,9 +45,9 @@ TERMS = ("sep", "act", "id", "mix")
 
 
 class Model(torch.nn.Module):
-    def __init__(self, speaker=None, features="mel"):
+    def __init__(self, speaker=None, features="mel", backbone="lstm"):
         super().__init__()
-        self.enc = IdentityEncoder(speaker=speaker, features=features)
+        self.enc = IdentityEncoder(speaker=speaker, features=features, backbone=backbone)
         self.sep = ConditionedSeparator(emb=self.enc.dim)
 
 
@@ -78,8 +78,9 @@ def chunk_frames(x, starts, k, frames):
     ])
 
 
-def objectives(model, b, dev, stage, p_tf, k, frames, amp):
-    """Raw objectives per sequence and permutation, plus tensors for validation."""
+def objectives(model, b, dev, stage, p_tf, k, frames, amp, bc_weight=1.0):
+    """Raw objectives per sequence and permutation, plus tensors for validation. ``bc_weight``
+    multiplies the activity BCE on short-reply frames (``bc``, Kezek v3 stage 1)."""
     mix, src, act = b["mix"].to(dev), b["src"].to(dev), b["act"].to(dev)
     disp, l_ref, ref = b["disputed"].to(dev), b["l_ref"].to(dev), b["ref"].to(dev)
     starts = b["seq_start"]
@@ -89,14 +90,16 @@ def objectives(model, b, dev, stage, p_tf, k, frames, amp):
         logits, z = model.enc(mix)
         r = model.enc.embed_single(ref.flatten(0, 1)).view(B, 2, -1)
     act20 = frames_20ms(act, logits.shape[-1])
+    bc20 = frames_20ms(b["bc"].to(dev), logits.shape[-1])
+    fw = 1.0 + (bc_weight - 1.0) * bc20  # [B, 2, F] frame weights of each speaker
     bce = torch.stack([
-        (F.binary_cross_entropy_with_logits(logits[:, 0], act20[:, p[0]], reduction="none").mean(-1)
-         + F.binary_cross_entropy_with_logits(logits[:, 1], act20[:, p[1]], reduction="none").mean(-1)) / 2
+        ((F.binary_cross_entropy_with_logits(logits[:, 0], act20[:, p[0]], reduction="none") * fw[:, p[0]]).mean(-1)
+         + (F.binary_cross_entropy_with_logits(logits[:, 1], act20[:, p[1]], reduction="none") * fw[:, p[1]]).mean(-1)) / 2
         for p in ((0, 1), (1, 0))
     ], dim=1)
     nce = info_nce(z, r)
     raw = {"bce": bce, "nce": nce}
-    out = {"logits": logits, "act20": act20, "z": z, "r": r}
+    out = {"logits": logits, "act20": act20, "bc20": bc20, "z": z, "r": r}
     if stage == "enc":
         return raw, out
 
@@ -177,15 +180,16 @@ def combine(raw, w, stage):
 
 
 @torch.no_grad()
-def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
+def validate(model, dataset, dev, stage, k, frames, amp, batch=4, bc_weight=1.0):
     model.eval()
     scores, si_all, si_ov, si_solo = [], [], [], []
     tp = fp = fn = 0.0
+    bc_hit = bc_n = 0
     swaps = swap_n = 0
     id_ok, cos_same, cos_diff = [], [], []
     for i0 in range(0, len(dataset), batch):
         b = collate([dataset[i] for i in range(i0, min(i0 + batch, len(dataset)))])
-        raw, o = objectives(model, b, dev, stage if stage != "e2e" else "e2e", 0.0, k, frames, amp)
+        raw, o = objectives(model, b, dev, stage if stage != "e2e" else "e2e", 0.0, k, frames, amp, bc_weight)
         # one permutation per span. In the separator stage the slots are the clean references in
         # speaker order; otherwise block 1's mono path decides (activity + identity agreement).
         if stage == "sep":
@@ -211,6 +215,13 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
             tp += float((pa * lab).sum())
             fp += float((pa * (1 - lab)).sum())
             fn += float(((1 - pa) * lab).sum())
+            # short replies: a run counts as found when >= 50% of its frames are active in its slot
+            bc = o["bc20"][j][list(perm)].bool().cpu().numpy()
+            pa_np = pa.cpu().numpy()
+            for i in (0, 1):
+                for r0, r1 in _runs(bc[i]):
+                    bc_n += 1
+                    bc_hit += int(pa_np[i, r0:r1].mean() >= 0.5)
             if stage == "enc":
                 continue
             y, src, mix = o["y"][j].cpu().numpy(), o["src_c"][j].cpu().numpy(), o["mix_c"][j].cpu().numpy()
@@ -234,6 +245,7 @@ def validate(model, dataset, dev, stage, k, frames, amp, batch=4):
     model.train()
     out = {"act_precision": tp / max(tp + fp, 1e-9), "act_recall": tp / max(tp + fn, 1e-9)}
     out["act_f1"] = 2 * out["act_precision"] * out["act_recall"] / max(out["act_precision"] + out["act_recall"], 1e-9)
+    out.update({"act_bc_recall": bc_hit / max(bc_n, 1), "act_bc_n": bc_n})
     out.update({"id_accuracy": float(np.mean(id_ok)), "id_cos_same": float(np.mean(cos_same)),
                 "id_cos_other": float(np.mean(cos_diff))})
     if stage != "enc":
@@ -278,6 +290,9 @@ def main():
                     help="ecapa slots: use only frames with solo probability above this")
     ap.add_argument("--slot-embedding", choices=("ecapa", "learned"), default="ecapa",
                     help="ecapa: frozen pretrained speaker encoder on solo-weighted mixture")
+    ap.add_argument("--backbone", choices=("lstm", "conformer"), default="lstm", help="block 1 sequence model")
+    ap.add_argument("--bc-weight", type=float, default=1.0, help="activity BCE weight on short-reply frames")
+    ap.add_argument("--experiment-tags", default="", help="extra comma-separated tracker tags")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--overfit", type=int, default=0, help="E0: train on this many fixed sequences")
     ap.add_argument("--train-hours", type=float, default=0, help="E1 2-5 h, E2 50 h, E3 100 h; 0 = all")
@@ -344,7 +359,7 @@ def main():
         from kezek.model import SpeakerEncoder
 
         speaker = SpeakerEncoder(device=dev)
-    model = Model(speaker, a.features).to(dev)
+    model = Model(speaker, a.features, a.backbone).to(dev)
     model.enc.solo_threshold = a.solo_threshold
     if a.init_tse:
         model.sep.tse.load_state_dict(torch.load(a.init_tse, map_location="cpu"))
@@ -382,7 +397,7 @@ def main():
             state = torch.load(a.init_model, map_location="cpu")
             if state.get("slot_embedding", "learned") == a.slot_embedding:
                 model.sep.load_state_dict(state["sep"])
-        m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp)
+        m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp, bc_weight=a.bc_weight)
         json.dump(m, open(f"{a.out}/eval_only.json", "w"), indent=1)
         print("EVAL ONLY", json.dumps({kk: round(v, 3) for kk, v in m.items() if isinstance(v, float)}), flush=True)
         return
@@ -393,7 +408,7 @@ def main():
         sums = {t: [] for t in TERMS}
         params = [p for g in groups for p in g["params"]]
         for step, b in enumerate(dl, 1):
-            raw, _ = objectives(model, b, dev, a.stage, 1.0, a.chunks, frames, a.amp)
+            raw, _ = objectives(model, b, dev, a.stage, 1.0, a.chunks, frames, a.amp, a.bc_weight)
             unit = {t: 1.0 for t in TERMS}
             _, picked, _ = combine(raw, unit, a.stage)
             for t, v in picked.items():
@@ -412,14 +427,15 @@ def main():
     name = os.path.basename(a.out.rstrip("/"))
     batches = iter(dl)
     run = tracker.init(name, {**vars(a), "weights": w, "params_enc": n_enc, "params_sep": n_sep},
-                       ["two-block", "m2s-v0.1", a.stage], a.steps)
+                       ["two-block", "m2s-v0.1", a.stage, a.backbone] + [t for t in a.experiment_tags.split(",") if t],
+                       a.steps)
     for e in log:
         tracker.log(run, {f"val/{kk}": v for kk, v in e.items() if kk != "step"}, e["step"])
 
     def run_eval(step):
         nonlocal best_score
-        m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp)
-        show = ("act_f1", "id_accuracy", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
+        m = validate(model, val_set, dev, a.stage, a.chunks, frames, a.amp, bc_weight=a.bc_weight)
+        show = ("act_f1", "act_bc_recall", "id_accuracy", "sisdri_overall", "sisdri_overlap_windows", "target_solo_sisdr", "target_solo_level_db",
                 "other_solo_leak_db", "both_silent_db", "backchannel_recall", "chunk_swap_rate")
         print(f"EVAL step {step}: " + json.dumps({kk: round(m[kk], 3) for kk in show if kk in m}), flush=True)
         log.append({"step": step, **m})
@@ -430,7 +446,7 @@ def main():
             best_score = score
             torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
                         "slot_embedding": a.slot_embedding, "solo_threshold": a.solo_threshold,
-                        "features": a.features}, f"{a.out}/best.pt")
+                        "features": a.features, "backbone": a.backbone}, f"{a.out}/best.pt")
 
     if start == 0 and not a.overfit:
         run_eval(0)
@@ -438,7 +454,7 @@ def main():
     t0, last = time.time(), min(a.steps, a.stop_at or a.steps)
     for step, b in enumerate(batches, start + 1):
         p_tf = teacher_prob(step, a.steps) if a.stage == "e2e" else 1.0
-        raw, _ = objectives(model, b, dev, a.stage, p_tf, a.chunks, frames, a.amp)
+        raw, _ = objectives(model, b, dev, a.stage, p_tf, a.chunks, frames, a.amp, a.bc_weight)
         loss, picked, _ = combine(raw, w, a.stage)
         if not torch.isfinite(loss):
             print(f"step {step}: non-finite loss, batch skipped", flush=True)
@@ -464,7 +480,7 @@ def main():
                 run_eval(step)
             torch.save({"enc": model.enc.state_dict(), "sep": model.sep.state_dict(),
                         "slot_embedding": a.slot_embedding, "solo_threshold": a.solo_threshold,
-                        "features": a.features}, f"{a.out}/model.pt")
+                        "features": a.features, "backbone": a.backbone}, f"{a.out}/model.pt")
             torch.save({"step": step, "model": model.state_dict(), "opt": opt.state_dict(),
                         "sched": sched.state_dict(), "log": log, "best_score": best_score}, f"{ckpt_path}.tmp")
             os.replace(f"{ckpt_path}.tmp", ckpt_path)

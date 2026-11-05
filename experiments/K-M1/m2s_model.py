@@ -79,9 +79,13 @@ class FrozenFeatures(nn.Module):
 
 
 class IdentityEncoder(nn.Module):
+    """``backbone``: ``lstm`` (BiLSTM, M2S v0.1) or ``conformer`` (Kezek v3 stage 1: 4 Conformer
+    layers, 4 heads, FFN 1024, depthwise kernel 31)."""
+
     def __init__(self, n_mels: int = 80, width: int = 256, layers: int = 3, emb: int = 128, speaker=None,
-                 features: str = "mel"):
+                 features: str = "mel", backbone: str = "lstm"):
         super().__init__()
+        self.backbone = backbone
         self._speaker = [speaker]  # not a submodule: frozen, not saved with the encoder
         self.solo_threshold = 0.0  # > 0: the speaker encoder sees only confidently solo frames
         self.dim = speaker.dim if speaker is not None else emb
@@ -99,9 +103,19 @@ class IdentityEncoder(nn.Module):
             self.front = nn.Sequential(
                 nn.Conv1d(self.ssl.dim, width, 3, padding=1), nn.GELU(),
             )
-        self.rnn = nn.LSTM(width, width, num_layers=layers, batch_first=True, bidirectional=True)
-        self.act = nn.Linear(2 * width, 2)
-        self.emb = nn.Linear(2 * width, emb)
+        if backbone == "lstm":
+            self.rnn = nn.LSTM(width, width, num_layers=layers, batch_first=True, bidirectional=True)
+            hdim = 2 * width
+        elif backbone == "conformer":
+            from torchaudio.models import Conformer
+
+            self.conformer = Conformer(width, num_heads=4, ffn_dim=4 * width, num_layers=4,
+                                       depthwise_conv_kernel_size=31, dropout=0.1)
+            hdim = width
+        else:
+            raise ValueError(backbone)
+        self.act = nn.Linear(hdim, 2)
+        self.emb = nn.Linear(hdim, emb)
 
     def frames(self, wav: torch.Tensor):
         if self.features == "mel":
@@ -112,8 +126,13 @@ class IdentityEncoder(nn.Module):
             m = self.ssl(wav)
             m = (m - m.mean(-1, keepdim=True)) / (m.std(-1, keepdim=True) + 1e-5)
         h = self.front(m).transpose(1, 2)
-        with torch.autocast(wav.device.type, enabled=False):  # no fast bf16 LSTM kernel
-            h, _ = self.rnn(h.float())
+        if self.backbone == "conformer":
+            lengths = torch.full((h.shape[0],), h.shape[1], device=h.device, dtype=torch.long)
+            h, _ = self.conformer(h, lengths)
+            h = h.float()
+        else:
+            with torch.autocast(wav.device.type, enabled=False):  # no fast bf16 LSTM kernel
+                h, _ = self.rnn(h.float())
         return self.act(h).transpose(1, 2).float(), self.emb(h).float()
 
     def forward(self, wav: torch.Tensor):
