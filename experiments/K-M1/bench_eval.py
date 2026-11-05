@@ -184,6 +184,8 @@ def main():
     ap.add_argument("--device", default="cuda")
     a = ap.parse_args()
     eps = [e for e in json.load(open(f"{a.bench}/segments.json")) if e["source"][:2] in a.lang]
+    for e in eps:  # missing single-speaker clips are listed without a file
+        e["clips"] = [c for c in e["clips"] if c.get("file")]
     res = {}
     for lang in a.lang:
         sub = [e for e in eps if e["source"].startswith(lang)]
