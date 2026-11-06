@@ -62,6 +62,9 @@ def _files(dirs: list[str]) -> list[str]:
     return sorted(out)
 
 
+RIR_CACHE = 2000  # RIRs kept in memory per bank
+
+
 @dataclass
 class DomainBank:
     rirs: list[str]
@@ -82,9 +85,12 @@ class DomainBank:
         self._rir_cache: dict[str, np.ndarray] = {}
 
     def rir(self, path: str) -> np.ndarray:
+        # bounded: the simulated RIR set alone is several GB per DataLoader worker as float64
         if path not in self._rir_cache:
-            self._rir_cache[path] = _read_mono(path)
-        return self._rir_cache[path]
+            if len(self._rir_cache) >= RIR_CACHE:
+                self._rir_cache.pop(next(iter(self._rir_cache)))
+            self._rir_cache[path] = _read_mono(path).astype(np.float32)
+        return self._rir_cache[path].astype(np.float64)
 
 
 def _read_mono(path: str, start: int = 0, frames: int = -1) -> np.ndarray:
