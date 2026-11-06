@@ -190,7 +190,90 @@ def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=10.0, iters=4, marg
         w["assign"] = [int(st[t]), 1 - int(st[t])]
         w["margin"] = float(conf[t])
         w["confident"] = w["margin"] >= margin
+        w["cut_next"] = float(link[t]) if t < n - 1 else 0.0  # what cutting after this window costs
     return [cent[0], cent[1]]
+
+
+@torch.no_grad()
+def relink_segments(windows, x: np.ndarray, spk, device: str, cut=2.0, cap_s=60.0, solo_unit=10.0,
+                    emb_w=4.0, iters=4, combine="max"):
+    """Second linking pass on long audio. ECAPA tells voices apart far better on long speech
+    (VoxCeleb pieces: EER 0.05 on 2-6 s vs 0.17 on 0.5-2 s), while a 16 s window holds a few
+    seconds of solo speech. After ``link_windows``:
+    * windows tied by their overlap (cutting between them costs >= ``cut``) form segments whose
+      internal A/B order stands;
+    * each segment gets one embedding per speaker from all its solo speech of that speaker
+      (decoded activity, joined end to end, up to ``cap_s`` seconds);
+    * segments are linked like windows: a chain over segments (keep or flip), unary from
+      centroids of the segment embeddings weighted by solo seconds / ``solo_unit``, pairwise from
+      the cut cost at their border; centroids re-estimated ``iters`` times.
+    Flips w["assign"] of windows in flipped segments; returns the number of flipped windows."""
+    n = len(windows)
+    if n < 2:
+        return 0
+    segs, a = [], 0
+    for t in range(n - 1):
+        if windows[t]["cut_next"] < cut:
+            segs.append((a, t))
+            a = t + 1
+    segs.append((a, n - 1))
+    if len(segs) < 2:
+        return 0
+    act = memory_activity(windows, len(x), combine)  # [2, F] 20 ms, decoded A/B
+    pa, pb = act[0] > 0.5, act[1] > 0.5
+    solo = np.stack([pa & ~pb, pb & ~pa])
+    rows, secs = [], []
+    for a, b in segs:
+        f0, f1 = windows[a]["start"] // 320, (windows[b]["end"] + 319) // 320
+        for s in (0, 1):
+            fr = np.flatnonzero(solo[s, f0:f1]) + f0
+            fr = fr[: int(cap_s * 50)]
+            secs.append(len(fr) * 0.02)
+            idx = (fr[:, None] * 320 + np.arange(320)[None]).ravel()
+            idx = idx[idx < len(x)]
+            rows.append(torch.from_numpy(np.ascontiguousarray(x[idx])) if len(idx) >= 1600 else None)
+    emb = torch.zeros(len(rows), spk.dim)
+    ok = [i for i, r in enumerate(rows) if r is not None]
+    for i in range(0, len(ok), 16):
+        part = [rows[j] for j in ok[i:i + 16]]
+        L = max(len(r) for r in part)
+        batch = torch.stack([F.pad(r, (0, L - len(r))) for r in part]).to(device)
+        rel = torch.tensor([len(r) / L for r in part], device=device)
+        emb[ok[i:i + 16]] = F.normalize(spk(batch.float(), rel).float().cpu(), dim=-1)
+    m = len(segs)
+    z = emb.view(m, 2, -1)
+    wt = torch.tensor([min(s, cap_s) / solo_unit if s >= 0.5 else 0.0 for s in secs]).view(m, 2)
+    border = np.array([windows[b]["cut_next"] for _, b in segs[:-1]])  # cost of flipping across
+    f = np.zeros(m, np.int64)
+    for _ in range(iters):
+        ar = torch.arange(m)
+        fa = torch.from_numpy(f)
+        cent = torch.stack([F.normalize((z[ar, fa] * wt[ar, fa].unsqueeze(-1)).sum(0), dim=-1),
+                            F.normalize((z[ar, 1 - fa] * wt[ar, 1 - fa].unsqueeze(-1)).sum(0), dim=-1)])
+        sim = torch.einsum("msd,kd->msk", z, cent)
+        un = np.stack([emb_w * (wt[:, 0] * sim[:, 0, 0] + wt[:, 1] * sim[:, 1, 1]).numpy(),
+                       emb_w * (wt[:, 0] * sim[:, 0, 1] + wt[:, 1] * sim[:, 1, 0]).numpy()], 1)
+        score, back = un[0].copy(), np.zeros((m, 2), np.int64)
+        for k in range(1, m):
+            new = np.empty(2)
+            for s in (0, 1):
+                cand = [score[q] - (border[k - 1] if q != s else 0.0) for q in (0, 1)]
+                back[k, s] = int(np.argmax(cand))
+                new[s] = max(cand) + un[k, s]
+            score = new
+        f = np.zeros(m, np.int64)
+        f[-1] = int(np.argmax(score))
+        for k in range(m - 1, 0, -1):
+            f[k - 1] = back[k, f[k]]
+    if f.sum() * 2 > m:  # the whole recording flipped only renames A and B
+        f = 1 - f
+    flipped = 0
+    for k, (a, b) in enumerate(segs):
+        if f[k]:
+            for w in windows[a:b + 1]:
+                w["assign"] = w["assign"][::-1]
+                flipped += 1
+    return flipped
 
 
 @torch.no_grad()

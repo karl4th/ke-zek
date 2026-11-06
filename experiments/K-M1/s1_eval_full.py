@@ -32,7 +32,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
 import tracker  # noqa: E402
 from m2s_data import backchannel_frames  # noqa: E402
-from m2s_infer import build_memory, identity_pass, link_windows, load, memory_activity  # noqa: E402
+from m2s_infer import build_memory, identity_pass, link_windows, load, memory_activity, relink_segments  # noqa: E402
 from m2s_model import frames_20ms  # noqa: E402
 from rdata import _Conversation, _runs, splits  # noqa: E402
 
@@ -92,6 +92,9 @@ def main():
                     help="overlapping windows: maximum or average of slot activity")
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--link-params", default="{}", help="JSON keyword arguments of link_windows")
+    ap.add_argument("--relink", default="", help="JSON keyword arguments of relink_segments (second "
+                    "linking pass on long solo audio per segment); empty: off")
+    ap.add_argument("--tag", default="", help="suffix of the tracker run name")
     a = ap.parse_args()
     lp = json.loads(a.link_params)
     link = build_memory if a.linker == "memory" else (lambda ws: link_windows(ws, **lp))
@@ -113,7 +116,7 @@ def main():
             [f"{r}/musan/noise"], [f"{r}/musan/music"]))
     sfx = "_rec" if render is not None else ""
     variant = ("_pack" if os.environ.get("KEZEK_PACK_SOLO") == "1" else "") + ("_ecapaft" if os.environ.get("KEZEK_ECAPA") else "")
-    run = tracker.init(f"s1_full_{a.split}{sfx}_{os.path.basename(os.path.dirname(a.model))}{variant}",
+    run = tracker.init(f"s1_full_{a.split}{sfx}_{os.path.basename(os.path.dirname(a.model))}{variant}{a.tag}",
                        {**vars(a), "pack_solo": os.environ.get("KEZEK_PACK_SOLO", "0"), "ecapa": os.environ.get("KEZEK_ECAPA", "")},
                        ["kezek-v3", "stage1", "full-recording", a.split], len(pairs))
     per_conv, hours = [], 0.0
@@ -138,6 +141,8 @@ def main():
                 os.makedirs(a.cache, exist_ok=True)
                 torch.save(windows, cf)
         link(windows)
+        if a.relink:
+            relink_segments(windows, x, model.enc._speaker[0], a.device, **json.loads(a.relink))
         p_act = memory_activity(windows, len(x), a.combine) > a.threshold
         nf = p_act.shape[1]
         bc10 = np.stack([backchannel_frames(act10[0], act10[1]), backchannel_frames(act10[1], act10[0])])
