@@ -26,7 +26,7 @@ d("manifestro/kezek-k-r1", "k-v3-v3s1c/best.pt", local_dir="/data/init", token=o
 print("MODELS READY")
 PY
 split=$repo/experiments/K-R1/split_round1.json
-python -c "import json; d = json.load(open('$split')); print('\n'.join('conv_' + c for c in d['val'] + d['test'] + d['train'][::31][:30]))" > /data/keep.txt
+python -c "import json; d = json.load(open('$split')); print('\n'.join('conv_' + c for c in d['val'] + d['test']))" > /data/keep.txt
 export KEEP=/data/keep.txt
 grep -q "AUG READY" /data/get_aug.log 2>/dev/null || ( bash "$here/get_aug.sh" > /data/get_aug.log 2>&1 ) &
 grep -q "parts done: 115" /data/get_data.log 2>/dev/null || \
@@ -52,8 +52,13 @@ clean() {
   for t in 0.3 0.2; do
     $v $c --reembed pred --solo-thr $t --tag _solo$t --out /data/dx/solo${t}_clean.json > /data/dx/solo${t}_clean.log 2>&1
   done
-  $e --split train --conversations 30 --tag _train30 --out /data/dx/train30_clean.json > /data/dx/train30_clean.log 2>&1
+  # 30 train conversations, fetched next to a copy of oy16 (validation and test linked in)
+  until grep -q "parts done" /data/get_train.log 2>/dev/null; do sleep 30; done
+  for d in /data/oy16/conv_*; do ln -sfn "$d" /data/oytrain/; done
+  $e --data /data/oytrain --split train --conversations 30 --tag _train30 --out /data/dx/train30_clean.json > /data/dx/train30_clean.log 2>&1
 }
+python -c "import json; d = json.load(open('$split')); print('\n'.join('conv_' + c for c in d['train'][::31][:30]))" > /data/keep_train.txt
+( KEEP=/data/keep_train.txt bash "$here/get_data.sh" /data/oytrain 6 > /data/get_train.log 2>&1 ) &
 rendered &
 clean &
 wait
