@@ -234,12 +234,12 @@ def relink_segments(windows, x: np.ndarray, spk, device: str, cut=2.0, cap_s=60.
             rows.append(torch.from_numpy(np.ascontiguousarray(x[idx])) if len(idx) >= 1600 else None)
     emb = torch.zeros(len(rows), spk.dim)
     ok = [i for i, r in enumerate(rows) if r is not None]
-    for i in range(0, len(ok), 16):
-        part = [rows[j] for j in ok[i:i + 16]]
+    for i in range(0, len(ok), 4):  # up to 4 x 60 s through ECAPA at once
+        part = [rows[j] for j in ok[i:i + 4]]
         L = max(len(r) for r in part)
         batch = torch.stack([F.pad(r, (0, L - len(r))) for r in part]).to(device)
         rel = torch.tensor([len(r) / L for r in part], device=device)
-        emb[ok[i:i + 16]] = F.normalize(spk(batch.float(), rel).float().cpu(), dim=-1)
+        emb[ok[i:i + 4]] = F.normalize(spk(batch.float(), rel).float().cpu(), dim=-1)
     m = len(segs)
     z = emb.view(m, 2, -1)
     wt = torch.tensor([min(s, cap_s) / solo_unit if s >= 0.5 else 0.0 for s in secs]).view(m, 2)
