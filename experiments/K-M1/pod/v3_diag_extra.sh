@@ -37,6 +37,11 @@ $e --split train --conversations 30 --tag _train30 --out /data/dx/train30_clean.
 wait
 # oracle embeddings only (labelled solo, predicted activity): embeddings or activity?
 $e --conversations 113 --cache /data/dx/cache_h8 --reembed label --tag _oracle_emb --out /data/dx/oracle_emb_clean.json > /data/dx/oracle_emb_clean.log 2>&1
+# more solo audio for the embeddings: a lower threshold on the predicted solo
+for t in 0.3 0.2; do
+  $e --conversations 113 --cache /data/dx/cache_h8 --reembed pred --solo-thr $t --tag _solo$t --out /data/dx/solo${t}_clean.json > /data/dx/solo${t}_clean.log 2>&1 &
+done
+wait
 # a full rendered recording takes about 12 GB of RAM: one at a time
 for part in sources finish; do
   $e --conversations 113 --aug-root /data/aug --render-part $part --tag _rec_$part \
