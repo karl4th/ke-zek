@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 import numpy as np
 import torch
@@ -69,6 +70,75 @@ def score_conversation(p_act: np.ndarray, act: np.ndarray, bc: np.ndarray, uncer
             sw_flag += int(uncertain[f0:f0 + win].any())
     r.update({"swap_windows": sw, "swap_windows_flagged": sw_flag, "two_speaker_windows": n_win})
     return r
+
+
+@torch.no_grad()
+def references(tracks, act, spk, device, cap_s=30.0):
+    """Clean reference embeddings of each speaker from their own track, one per half of the
+    recording (labelled solo frames, up to ``cap_s``): [half, speaker, D]; NaN without 1 s of solo."""
+    nf = act.shape[1]
+    out = np.full((2, 2, spk.dim), np.nan, np.float32)
+    for h, (f0, f1) in enumerate(((0, nf // 2), (nf // 2, nf))):
+        for s in (0, 1):
+            fr = (np.flatnonzero(act[s, f0:f1] & ~act[1 - s, f0:f1]) + f0)[: int(cap_s * 50)]
+            idx = (fr[:, None] * 320 + np.arange(320)[None]).ravel()
+            idx = idx[idx < len(tracks[s])]
+            if len(idx) >= 16_000:
+                z = spk(torch.from_numpy(np.ascontiguousarray(tracks[s][idx]))[None].to(device).float())
+                out[h, s] = F.normalize(z.float().cpu(), dim=-1)[0].numpy()
+    return out
+
+
+def window_metrics(windows, p_act, act, refs, min_solo=2.0):
+    """Per 16 s window after linking. A window is clear when both people have >= ``min_solo`` s of
+    labelled solo in it; its slot order then follows the labels (agreement of its slot activity),
+    and it is swapped when the linked order puts its slots on the other recording-level profiles.
+    Unclear windows with speech: whether their activity lands on the wrong profile. Identity: do
+    the slot embeddings match their own speaker's clean reference (other half of the recording)
+    better than the other's (K-M1 id_accuracy)."""
+    nf = act.shape[1]
+    keep = (p_act[0] & act[0]).sum() + (p_act[1] & act[1]).sum()
+    cross = (p_act[0] & act[1]).sum() + (p_act[1] & act[0]).sum()
+    spk_of_mem = (0, 1) if keep >= cross else (1, 0)  # speaker held by memory A, B
+    n, rows = len(windows), []
+    for t, w in enumerate(windows):
+        f0 = w["start"] // 320
+        q = w["p"].float().numpy() > 0.5
+        L = min(q.shape[1], nf - f0)
+        if L <= 0:
+            continue
+        q, l = q[:, :L], act[:, f0:f0 + L]
+        ref_solo = [float((l[s] & ~l[1 - s]).sum() * 0.02) for s in (0, 1)]
+        k = (q[0] & l[0]).sum() + (q[1] & l[1]).sum()
+        x = (q[0] & l[1]).sum() + (q[1] & l[0]).sum()
+        spk_slot0 = 0 if k >= x else 1  # speaker in slot 0 by the labels
+        linked_slot0 = spk_of_mem[0] if w["assign"][0] == 0 else spk_of_mem[1]
+        clear = min(ref_solo) >= min_solo
+        r = {"t": t, "clear": clear, "edge": t < 2 or t >= n - 2, "ref_solo_min": round(min(ref_solo), 2),
+             "pred_solo_min": round(float(min(w["solo_s"])), 2), "margin": round(float(w["margin"]), 3)}
+        if clear:
+            r["swap"] = spk_slot0 != linked_slot0
+            hc = 0 if f0 + L / 2 < nf / 2 else 1
+            ref = refs[1 - hc]
+            if not np.isnan(ref).any():
+                z = F.normalize(w["z"].float(), dim=-1).numpy()
+                sp = (spk_slot0, 1 - spk_slot0)
+                same = z[0] @ ref[sp[0]] + z[1] @ ref[sp[1]]
+                diff = z[0] @ ref[sp[1]] + z[1] @ ref[sp[0]]
+                r["id_ok"] = bool(same > diff)
+        elif k + x >= 25:
+            r["wrong_profile"] = spk_slot0 != linked_slot0
+        rows.append(r)
+    runs, cur = [], 0
+    for r in rows:
+        if r.get("swap"):
+            cur += 1
+        elif r.get("swap") is False and cur:
+            runs.append(cur)
+            cur = 0
+    if cur:
+        runs.append(cur)
+    return rows, runs
 
 
 @torch.no_grad()
@@ -169,7 +239,7 @@ def main():
     run = tracker.init(f"s1_full_{a.split}{sfx}_{os.path.basename(os.path.dirname(a.model))}{variant}{a.tag}",
                        {**vars(a), "pack_solo": os.environ.get("KEZEK_PACK_SOLO", "0"), "ecapa": os.environ.get("KEZEK_ECAPA", "")},
                        ["kezek-v3", "stage1", "full-recording", a.split], len(pairs))
-    per_conv, hours = [], 0.0
+    per_conv, hours, t_ident, h_ident, win_rows, win_runs = [], 0.0, 0.0, 0.0, [], []
     for k, pair in enumerate(pairs):
         c = _Conversation(pair)
         nfr = min(c.frames, int(a.max_minutes * 6000))
@@ -186,7 +256,10 @@ def main():
         if cf and os.path.exists(cf):
             windows = torch.load(cf)
         else:
+            t0 = time.time()
             windows = identity_pass(model, x, a.device, win_s=a.win_s, hop_s=a.hop_s)
+            t_ident += time.time() - t0
+            h_ident += len(x) / SR / 3600
             if cf:
                 os.makedirs(a.cache, exist_ok=True)
                 torch.save(windows, cf)
@@ -207,6 +280,13 @@ def main():
             if not w["confident"]:
                 unc[w["start"] // 320:w["end"] // 320] = True
         r = score_conversation(p_act, act, bc, unc)
+        refs = references((sa, sb), act, model.enc._speaker[0], a.device)
+        rows, runs = window_metrics(windows, p_act, act, refs)
+        for row in rows:
+            row["conv"] = pair.conversation_id
+        win_rows += rows
+        win_runs += runs
+        r.update({"swap16": sum(bool(x.get("swap")) for x in rows), "clear16": sum(x["clear"] for x in rows)})
         r.update({"conv": pair.conversation_id, "minutes": nfr / 6000,
                   "uncertain_windows": int(sum(not w["confident"] for w in windows)), "windows": len(windows)})
         per_conv.append(r)
@@ -229,6 +309,28 @@ def main():
         "uncertain_window_rate": sum(p["uncertain_windows"] for p in per_conv) / max(sum(p["windows"] for p in per_conv), 1),
         "conversations": len(per_conv), "hours": hours,
     }
+    clear = [x for x in win_rows if x["clear"]]
+    sw16 = [x for x in clear if x["swap"]]
+    unclear = [x for x in win_rows if "wrong_profile" in x]
+    ids = [x["id_ok"] for x in clear if "id_ok" in x]
+    out.update({
+        "windows16": len(win_rows), "clear_windows16": len(clear), "unclear_windows16": len(win_rows) - len(clear),
+        "swap_windows16": len(sw16), "swap_rate16": len(sw16) / max(len(clear), 1),
+        "conversations_without_swaps16": float(np.mean([p["swap16"] == 0 for p in per_conv])),
+        "unclear_wrong_profile_rate": float(np.mean([x["wrong_profile"] for x in unclear])) if unclear else float("nan"),
+        "id_accuracy": float(np.mean(ids)) if ids else float("nan"),
+        "swap16_edge_share": float(np.mean([x["edge"] for x in sw16])) if sw16 else float("nan"),
+        "swap16_run_mean": float(np.mean(win_runs)) if win_runs else 0.0,
+        "swap16_run_max": int(max(win_runs)) if win_runs else 0,
+        "swap16_pred_solo_min_median": float(np.median([x["pred_solo_min"] for x in sw16])) if sw16 else float("nan"),
+        "ok16_pred_solo_min_median": float(np.median([x["pred_solo_min"] for x in clear if not x["swap"]])) if clear else float("nan"),
+        "swap16_ref_solo_min_median": float(np.median([x["ref_solo_min"] for x in sw16])) if sw16 else float("nan"),
+        "swap_rate16_pred_solo_lt2": (lambda c: float(np.mean([x["swap"] for x in c])) if c else float("nan"))(
+            [x for x in clear if x["pred_solo_min"] < 2.0]),
+        "swap_rate16_pred_solo_ge2": (lambda c: float(np.mean([x["swap"] for x in c])) if c else float("nan"))(
+            [x for x in clear if x["pred_solo_min"] >= 2.0]),
+        "ident_s_per_audio_hour": t_ident / h_ident if h_ident else float("nan"),
+    })
     if a.real_clip:
         import soundfile as sf
         from scipy.signal import resample_poly
@@ -248,7 +350,7 @@ def main():
         speech = e > e.max() - 40
         share = p_act[:, speech].mean(1)
         out.update({"real_dominant_share": float(share.max()), "real_other_share": float(share.min())})
-    json.dump({"summary": out, "per_conversation": per_conv, "args": vars(a)}, open(a.out, "w"), indent=1)
+    json.dump({"summary": out, "per_conversation": per_conv, "windows": win_rows, "swap_runs": win_runs, "args": vars(a)}, open(a.out, "w"), indent=1)
     print("SUMMARY", json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()}), flush=True)
     tracker.log(run, {f"full_{a.split}{sfx}/{k}": v for k, v in out.items() if isinstance(v, (int, float))}, len(pairs))
     tracker.finish(run)
