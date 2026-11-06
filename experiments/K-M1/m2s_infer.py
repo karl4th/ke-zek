@@ -179,6 +179,8 @@ def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=10.0, iters=4, marg
     right = np.concatenate([link, [0.0]])  # cut after a run ending at b
     M = P[None, 1:] - P[:-1, None] + left[:, None] + right[None, :]  # run [a, b]
     M[np.tril_indices(n, -1)] = np.inf
+    if n > 1:
+        M[0, n - 1] = np.inf  # flipping the whole recording only renames A and B
     A = np.minimum.accumulate(M[:, ::-1], axis=1)[:, ::-1]  # min over b >= t
     conf = np.minimum.accumulate(A, axis=0).diagonal()  # min over a <= t
     for t, w in enumerate(windows):
