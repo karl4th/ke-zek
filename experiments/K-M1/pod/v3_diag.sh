@@ -34,21 +34,22 @@ wait
 grep -q "AUG READY" /data/get_aug.log || { echo "aug download failed"; exit 1; }
 mkdir -p /data/diag
 e="python experiments/K-M1/s1_eval_full.py --data /data/oy16 --split-file $split --conversations 113 --max-minutes 100000 --model /data/init/k-v3-v3s1c/best.pt"
-ev() {  # name flags...: clean and rendered in parallel
-  local n=$1
-  shift
-  $e "$@" --tag "_$n" --out /data/diag/${n}_clean.json > /data/diag/${n}_clean.log 2>&1 &
-  $e "$@" --tag "_$n" --aug-root /data/aug --out /data/diag/${n}_rec.json > /data/diag/${n}_rec.log 2>&1 &
-}
+# a full rendered recording (up to 76 min) takes about 12 GB of RAM to render: rendered runs go
+# one at a time and next to clean runs only
+cl() { local n=$1; shift; $e "$@" --tag "_$n" --out /data/diag/${n}_clean.json > /data/diag/${n}_clean.log 2>&1; }
+rc() { local n=$1; shift; $e "$@" --tag "_$n" --aug-root /data/aug --out /data/diag/${n}_rec.json > /data/diag/${n}_rec.log 2>&1; }
 if [ "$mode" = main ]; then
-  ev pred05 --cache /data/diag/cache_h8
+  c="--cache /data/diag/cache_h8"
+  cl pred05 $c
+  rc pred05 $c
+  cl pred09 $c --reembed pred --solo-thr 0.9 &
+  cl label $c --reembed label_full &
   wait
-  ev pred09 --cache /data/diag/cache_h8 --reembed pred --solo-thr 0.9
-  ev label --cache /data/diag/cache_h8 --reembed label_full
-  wait
+  rc pred09 $c --reembed pred --solo-thr 0.9
+  rc label $c --reembed label_full
 else
-  ev pred05_hop2 --hop-s 2
-  wait
+  cl pred05_hop2 --hop-s 2 --cache /data/diag/cache_h2
+  rc pred05_hop2 --hop-s 2 --cache /data/diag/cache_h2
 fi
 for f in /data/diag/*.log; do
   grep -q SUMMARY "$f" && echo "$(basename "$f" .log) $(grep -h SUMMARY "$f" | sed 's/SUMMARY //')"
