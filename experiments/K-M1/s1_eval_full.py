@@ -26,6 +26,7 @@ import sys
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -46,12 +47,13 @@ def score_conversation(p_act: np.ndarray, act: np.ndarray, bc: np.ndarray, uncer
     order = (0, 1) if agree[0] >= agree[1] else (1, 0)  # memory slot of speaker a, b
     p = p_act[list(order)]
     r = {"tp": float((p & act).sum()), "fp": float((p & ~act).sum()), "fn": float((~p & act).sum())}
-    hit = n = 0
+    hit = hit_any = n = 0
     for s in (0, 1):
         for r0, r1 in _runs(bc[s]):
             n += 1
             hit += int(p[s, r0:r1].mean() >= 0.5)
-    r.update({"bc_hit": hit, "bc_n": n})
+            hit_any += int((p[0, r0:r1] | p[1, r0:r1]).mean() >= 0.5)
+    r.update({"bc_hit": hit, "bc_n": n, "bc_hit_any": hit_any})
     win = 200  # 4 s on the 20 ms grid
     sw = sw_flag = n_win = 0
     for f0 in range(0, act.shape[1] - win + 1, win):
@@ -67,6 +69,49 @@ def score_conversation(p_act: np.ndarray, act: np.ndarray, bc: np.ndarray, uncer
             sw_flag += int(uncertain[f0:f0 + win].any())
     r.update({"swap_windows": sw, "swap_windows_flagged": sw_flag, "two_speaker_windows": n_win})
     return r
+
+
+@torch.no_grad()
+def reembed(windows, x, spk, device, lab, mode, thr):
+    """Slot embeddings from packed solo audio of each window, by the predicted solo (p_a (1 - p_b)
+    above ``thr``) or by the labels (the speaker a slot holds: the one its activity agrees with in
+    that window). ``label_full`` also sets the slot activity to the labels."""
+    nf = lab.shape[1]
+    for w in windows:
+        f0 = w["start"] // 320
+        p = w["p"].float().numpy()
+        L = min(p.shape[1], nf - f0)
+        if mode == "pred":
+            solo = np.stack([p[0] * (1 - p[1]) > thr, p[1] * (1 - p[0]) > thr])[:, :L]
+        else:
+            l = lab[:, f0:f0 + L]
+            q = p[:, :L] > 0.5
+            keep = (q[0] & l[0]).sum() + (q[1] & l[1]).sum()
+            cross = (q[0] & l[1]).sum() + (q[1] & l[0]).sum()
+            sp = (0, 1) if keep >= cross else (1, 0)  # speaker held by slot 0, 1
+            solo = np.stack([l[sp[0]] & ~l[sp[1]], l[sp[1]] & ~l[sp[0]]])
+            if mode == "label_full":
+                full = np.zeros_like(p)
+                full[:, :L] = np.stack([l[sp[0]], l[sp[1]]])
+                w["p"] = torch.from_numpy(full)
+        rows, secs = [], []
+        for s in (0, 1):
+            fr = np.flatnonzero(solo[s]) + f0
+            idx = (fr[:, None] * 320 + np.arange(320)[None]).ravel()
+            idx = idx[idx < len(x)]
+            secs.append(len(fr) * 0.02)
+            if len(idx) < 1600:  # < 0.1 s: the masked window as in m2s_model._packed
+                seg = np.zeros(int(w["end"] - w["start"]), np.float32)
+                m = np.repeat(solo[s], 320)[: len(seg)]
+                seg[: len(m)] = x[w["start"]:w["start"] + len(m)] * m
+                rows.append(seg)
+            else:
+                rows.append(x[idx])
+        Lm = max(len(r) for r in rows)
+        batch = torch.stack([F.pad(torch.from_numpy(np.ascontiguousarray(r)), (0, Lm - len(r))) for r in rows]).to(device)
+        rel = torch.tensor([len(r) / Lm for r in rows], device=device)
+        w["z"] = F.normalize(spk(batch.float(), rel).float().cpu(), dim=-1)
+        w["solo_s"] = secs
 
 
 def main():
@@ -95,6 +140,11 @@ def main():
     ap.add_argument("--relink", default="", help="JSON keyword arguments of relink_segments (second "
                     "linking pass on long solo audio per segment); empty: off")
     ap.add_argument("--tag", default="", help="suffix of the tracker run name")
+    ap.add_argument("--reembed", choices=("", "pred", "label", "label_full"), default="",
+                    help="slot embeddings again from packed solo audio before linking: 'pred' from the "
+                    "predicted solo above --solo-thr, 'label' from the labelled solo of the speaker each "
+                    "slot holds (oracle embeddings), 'label_full' also replaces the slot activity by the labels")
+    ap.add_argument("--solo-thr", type=float, default=0.5)
     a = ap.parse_args()
     lp = json.loads(a.link_params)
     link = build_memory if a.linker == "memory" else (lambda ws: link_windows(ws, **lp))
@@ -140,6 +190,10 @@ def main():
             if cf:
                 os.makedirs(a.cache, exist_ok=True)
                 torch.save(windows, cf)
+        if a.reembed:
+            nf0 = len(x) // 320 + 1
+            reembed(windows, x, model.enc._speaker[0], a.device, frames_20ms(torch.from_numpy(act10), nf0).bool().numpy(),
+                    a.reembed, a.solo_thr)
         link(windows)
         if a.relink:
             relink_segments(windows, x, model.enc._speaker[0], a.device, **json.loads(a.relink))
@@ -167,6 +221,7 @@ def main():
         "act_precision": prec, "act_recall": rec, "act_f1": 2 * prec * rec / max(prec + rec, 1e-9),
         "bc_recall": sum(p["bc_hit"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
         "bc_runs": sum(p["bc_n"] for p in per_conv),
+        "bc_recall_any_slot": sum(p["bc_hit_any"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
         "swap_windows": sw, "swap_windows_per_hour": sw / max(hours, 1e-9),
         "swap_windows_unflagged": sw - sum(p["swap_windows_flagged"] for p in per_conv),
         "swap_window_rate": sw / max(sum(p["two_speaker_windows"] for p in per_conv), 1),
