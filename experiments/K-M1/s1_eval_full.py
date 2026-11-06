@@ -83,7 +83,6 @@ def main():
     ap.add_argument("--aug-root", default="", help="render each conversation as one mono recording")
     ap.add_argument("--real-clip", default="")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--step", type=int, default=0, help="training step of the model (tracker x axis)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--linker", choices=("memory", "global"), default="global",
                     help="greedy slot memory or global Viterbi linking (m2s_infer.link_windows)")
@@ -112,6 +111,11 @@ def main():
         render = Render(DomainBank.from_dirs(
             [f"{r}/RIRS_NOISES/simulated_rirs", f"{r}/RIRS_NOISES/real_rirs_isotropic_noises"],
             [f"{r}/musan/noise"], [f"{r}/musan/music"]))
+    sfx = "_rec" if render is not None else ""
+    variant = ("_pack" if os.environ.get("KEZEK_PACK_SOLO") == "1" else "") + ("_ecapaft" if os.environ.get("KEZEK_ECAPA") else "")
+    run = tracker.init(f"s1_full_{a.split}{sfx}_{os.path.basename(os.path.dirname(a.model))}{variant}",
+                       {**vars(a), "pack_solo": os.environ.get("KEZEK_PACK_SOLO", "0"), "ecapa": os.environ.get("KEZEK_ECAPA", "")},
+                       ["kezek-v3", "stage1", "full-recording", a.split], len(pairs))
     per_conv, hours = [], 0.0
     for k, pair in enumerate(pairs):
         c = _Conversation(pair)
@@ -149,6 +153,8 @@ def main():
         per_conv.append(r)
         hours += nfr / 360_000
         print(json.dumps(r), flush=True)
+        tracker.log(run, {f"progress_{a.split}{sfx}/conversations_without_swaps": float(np.mean([p["swap_windows"] == 0 for p in per_conv])),
+                          f"progress_{a.split}{sfx}/swap_windows": sum(p["swap_windows"] for p in per_conv)}, k + 1)
     tp, fp, fn = (sum(p[x] for p in per_conv) for x in ("tp", "fp", "fn"))
     prec, rec = tp / max(tp + fp, 1e-9), tp / max(tp + fn, 1e-9)
     sw = sum(p["swap_windows"] for p in per_conv)
@@ -182,12 +188,9 @@ def main():
         speech = e > e.max() - 40
         share = p_act[:, speech].mean(1)
         out.update({"real_dominant_share": float(share.max()), "real_other_share": float(share.min())})
-    sfx = "_rec" if render is not None else ""
     json.dump({"summary": out, "per_conversation": per_conv, "args": vars(a)}, open(a.out, "w"), indent=1)
     print("SUMMARY", json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()}), flush=True)
-    run = tracker.init(f"s1_full_{a.split}{sfx}_{os.path.basename(os.path.dirname(a.model))}", vars(a),
-                       ["kezek-v3", "stage1", "full-recording", a.split], 1)
-    tracker.log(run, {f"full_{a.split}{sfx}/{k}": v for k, v in out.items() if isinstance(v, (int, float))}, a.step)
+    tracker.log(run, {f"full_{a.split}{sfx}/{k}": v for k, v in out.items() if isinstance(v, (int, float))}, len(pairs))
     tracker.finish(run)
 
 
