@@ -56,6 +56,7 @@ def main():
     ap.add_argument("--conversations", type=int, default=113)
     ap.add_argument("--max-minutes", type=float, default=30.0)
     ap.add_argument("--link-params", default="{}")
+    ap.add_argument("--combine", choices=("max", "mean", "center"), default="max")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
     lp = json.loads(a.link_params)
@@ -75,7 +76,7 @@ def main():
         c = _Conversation(pair)
         nfr = min(c.frames, int(a.max_minutes * 6000))
         n_samples = nfr * 160
-        p_act = memory_activity(ws, n_samples) > 0.5
+        p_act = memory_activity(ws, n_samples, a.combine) > 0.5
         nf = p_act.shape[1]
         act = frames_20ms(torch.from_numpy(np.stack([c.act[0][:nfr], c.act[1][:nfr]])), nf).bool().numpy()
         k, x = order(p_act, act)

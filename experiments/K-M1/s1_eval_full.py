@@ -88,7 +88,7 @@ def main():
                     help="greedy slot memory or global Viterbi linking (m2s_infer.link_windows)")
     ap.add_argument("--cache", default="", help="directory of identity-pass windows per conversation "
                     "(written on the first run, reused after: relinking needs no model)")
-    ap.add_argument("--combine", choices=("max", "mean"), default="max",
+    ap.add_argument("--combine", choices=("max", "mean", "center"), default="max",
                     help="overlapping windows: maximum or average of slot activity")
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--link-params", default="{}", help="JSON keyword arguments of link_windows")

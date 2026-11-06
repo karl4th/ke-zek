@@ -329,6 +329,20 @@ def memory_activity(windows, n_samples: int, combine: str = "max") -> np.ndarray
     nf = n_samples // 320 + 1
     act = np.zeros((2, nf), np.float32)
     cnt = np.zeros(nf, np.float32)
+    if combine == "center":  # each frame from the window whose centre is nearest (edges are least sure)
+        best = np.full(nf, np.inf, np.float32)
+        for w in windows:
+            if w["assign"] is None:
+                continue
+            f0 = w["start"] // 320
+            p = w["p"].float().numpy()
+            L = min(p.shape[1], nf - f0)
+            d = np.abs(np.arange(L) - (L - 1) / 2)
+            take = d < best[f0:f0 + L]
+            for m, slot in enumerate(w["assign"]):
+                act[m, f0:f0 + L][take] = p[slot, :L][take]
+            best[f0:f0 + L][take] = d[take]
+        return act
     for w in windows:
         if w["assign"] is None:
             continue
