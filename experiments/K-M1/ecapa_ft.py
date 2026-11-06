@@ -206,6 +206,8 @@ def main():
     ap.add_argument("--val-speakers", type=int, default=200)
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--init", default="", help="embedding model weights to continue from (ecapa_last.pt)")
+    ap.add_argument("--start-step", type=int, default=0, help="step those weights were saved at")
     a = ap.parse_args()
     if a.prep:
         prep(a.vox, a.shards)
@@ -233,6 +235,8 @@ def main():
         p.requires_grad_(False)
     for p in model.parameters():
         p.requires_grad_(True)
+    if a.init:
+        model.load_state_dict(torch.load(a.init, map_location=a.device))
 
     def embed(wav, rel):
         feats = enc.mods.compute_features(wav)
@@ -243,22 +247,22 @@ def main():
     opt = torch.optim.AdamW([{"params": model.parameters(), "lr": a.lr},
                              {"params": head.parameters(), "lr": a.lr_head}], weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.LambdaLR(
-        opt, lambda s: min(1.0, (s + 1) / 500) * 0.5 * (1 + math.cos(math.pi * min(s, a.steps) / a.steps)))
+        opt, lambda s: min(1.0, (s + 1) / 500) * 0.5 * (1 + math.cos(math.pi * min(s + a.start_step, a.steps) / a.steps)))
     trials = make_trials(Pieces(a.vox, a.aug_root), val_by)
     run = tracker.init(f"ecapa_ft_{os.path.basename(a.out.rstrip('/'))}",
                        {**vars(a), "train_speakers": len(train_spk), "utterances": len(train_utts)},
                        ["kezek-v3", "stage1", "ecapa-ft", "voxceleb2"], a.steps)
     model.eval()
     v = validate(embed, trials, a.device)
-    print(f"EVAL step 0: {json.dumps(v)}", flush=True)
-    tracker.log(run, {f"val/{k}": x for k, x in v.items()}, 0)
+    print(f"EVAL step {a.start_step}: {json.dumps(v)}", flush=True)
+    tracker.log(run, {f"val/{k}": x for k, x in v.items()}, a.start_step)
     best = v["eer"]
     torch.save(model.state_dict(), f"{a.out}/ecapa.pt")
     dl = torch.utils.data.DataLoader(TrainSet((a.vox, a.aug_root), train_utts, spk_of, 1), batch_size=a.bs,
                                      num_workers=a.workers, collate_fn=collate)
-    head_warm = 300  # train the new head alone first, so the encoder is not pushed by random weights
+    head_warm = a.start_step + 300  # train the new head alone first, so the encoder is not pushed by random weights
     t0 = time.time()
-    for step, (wav, rel, y) in enumerate(dl, 1):
+    for step, (wav, rel, y) in enumerate(dl, a.start_step + 1):
         model.train(step > head_warm)
         for p in model.parameters():
             p.requires_grad_(step > head_warm)
@@ -270,7 +274,7 @@ def main():
         opt.step()
         sched.step()
         if step % 100 == 0:
-            print(f"step {step:6d} loss {loss.item():.3f} {step / (time.time() - t0):.2f} it/s", flush=True)
+            print(f"step {step:6d} loss {loss.item():.3f} {(step - a.start_step) / (time.time() - t0):.2f} it/s", flush=True)
             tracker.log(run, {"train/loss": loss.item()}, step)
         if step % a.eval_every == 0 or step == a.steps:
             model.eval()
@@ -281,6 +285,7 @@ def main():
                 best = v["eer"]
                 torch.save(model.state_dict(), f"{a.out}/ecapa.pt")
             torch.save(model.state_dict(), f"{a.out}/ecapa_last.pt")
+            torch.save(head.state_dict(), f"{a.out}/head_last.pt")
         if step >= a.steps:
             break
     tracker.finish(run)
