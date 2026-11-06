@@ -92,8 +92,10 @@ def main():
     ap.add_argument("--combine", choices=("max", "mean"), default="max",
                     help="overlapping windows: maximum or average of slot activity")
     ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--link-params", default="{}", help="JSON keyword arguments of link_windows")
     a = ap.parse_args()
-    link = build_memory if a.linker == "memory" else link_windows
+    lp = json.loads(a.link_params)
+    link = build_memory if a.linker == "memory" else (lambda ws: link_windows(ws, **lp))
     if a.split == "test" and not a.final:
         raise SystemExit("the test split is read only with --final")
     _, val, test = splits(a.data, split_file=a.split_file or None)
