@@ -45,9 +45,12 @@ def load(path: str, device: str) -> TwoBlock:
         from kezek.model import SpeakerEncoder
 
         speaker = SpeakerEncoder(device=device)
+        if os.environ.get("KEZEK_ECAPA"):  # fine-tuned embedding model (ecapa_ft.py)
+            speaker.enc.mods.embedding_model.load_state_dict(torch.load(os.environ["KEZEK_ECAPA"], map_location=device))
     m = TwoBlock(speaker, state.get("features", "mel"), state.get("backbone", "lstm"),
                  state.get("act_head", "multilabel")).to(device).eval()
     m.enc.solo_threshold = float(state.get("solo_threshold", 0.0))
+    m.enc.pack_solo = os.environ.get("KEZEK_PACK_SOLO", "0") == "1"
     m.enc.load_state_dict(state["enc"])
     m.sep.load_state_dict(state["sep"])
     return m

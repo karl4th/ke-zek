@@ -42,9 +42,10 @@ class SpeakerEncoder(nn.Module):
         super().train(False)
         return self
 
-    def forward(self, wav: torch.Tensor) -> torch.Tensor:
-        """wav [B, T] -> embedding [B, dim], differentiable w.r.t. ``wav``."""
-        emb = self.enc.encode_batch(wav, normalize=False)  # [B, 1, dim]
+    def forward(self, wav: torch.Tensor, lengths: torch.Tensor | None = None) -> torch.Tensor:
+        """wav [B, T] -> embedding [B, dim], differentiable w.r.t. ``wav``. ``lengths`` [B]:
+        relative lengths of left-aligned audio (the rest is padding and is ignored)."""
+        emb = self.enc.encode_batch(wav, wav_lens=lengths, normalize=False)  # [B, 1, dim]
         return emb.squeeze(1)
 
 

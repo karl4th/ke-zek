@@ -93,6 +93,7 @@ class IdentityEncoder(nn.Module):
         self.last_powerset = None
         self._speaker = [speaker]  # not a submodule: frozen, not saved with the encoder
         self.solo_threshold = 0.0  # > 0: the speaker encoder sees only confidently solo frames
+        self.pack_solo = False  # hard threshold: those frames joined end to end, no zero gaps
         self.solo_soft = 0.0  # > 0 (training only): sigmoid((solo - threshold) / solo_soft) instead
         # of the hard cut, so the identity loss reaches the activity network through the frame weights
         self.dim = speaker.dim if speaker is not None else emb
@@ -164,6 +165,9 @@ class IdentityEncoder(nn.Module):
                 ws = solo
             w = ws.repeat_interleave(2 * HOP, dim=-1)[..., :T]
             w = F.pad(w, (0, T - w.shape[-1]))
+            if self.pack_solo and self.solo_threshold > 0 and not self.training:
+                z = self._packed(spk, wav, w)
+                return logits, F.normalize(z, dim=-1)
             masked = (wav[:, None] * w).flatten(0, 1)
             with torch.autocast(wav.device.type, enabled=False):
                 z = spk(masked.float()).view(wav.shape[0], 2, -1)
@@ -171,6 +175,25 @@ class IdentityEncoder(nn.Module):
         w = solo / (solo.sum(-1, keepdim=True) + 1e-4)
         z = torch.einsum("bsf,bfd->bsd", w, e)
         return logits, F.normalize(z, dim=-1)
+
+    @staticmethod
+    def _packed(spk, wav: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """Speaker embedding of each slot from its solo samples only, joined end to end (masking
+        with zeros feeds ECAPA long stretches of digital silence and hard edges). w [B, 2, T]."""
+        B, T = wav.shape
+        rows, lens = [], []
+        for b in range(B):
+            for s in range(2):
+                x = wav[b][w[b, s] > 0.5]
+                if x.numel() < 1600:  # < 0.1 s of solo speech: fall back to the zero-masked window
+                    x = wav[b] * w[b, s]
+                rows.append(x)
+                lens.append(x.numel())
+        L = max(lens)
+        batch = torch.stack([F.pad(x, (0, L - x.numel())) for x in rows])
+        rel = torch.tensor(lens, device=wav.device, dtype=torch.float32) / L
+        with torch.autocast(wav.device.type, enabled=False):
+            return spk(batch.float(), rel).view(B, 2, -1)
 
     def embed_single(self, wav: torch.Tensor) -> torch.Tensor:
         """Embedding of single-speaker audio [B, T] -> [B, 128]: frames weighted by the larger
