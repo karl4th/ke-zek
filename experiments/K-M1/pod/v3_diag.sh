@@ -41,12 +41,12 @@ rc() { local n=$1; shift; $e "$@" --tag "_$n" --aug-root /data/aug --out /data/d
 if [ "$mode" = main ]; then
   c="--cache /data/diag/cache_h8"
   cl pred05 $c
-  rc pred05 $c
-  cl pred09 $c --reembed pred --solo-thr 0.9 &
   cl label $c --reembed label_full &
+  cl pred09 $c --reembed pred --solo-thr 0.9 &
   wait
-  rc pred09 $c --reembed pred --solo-thr 0.9
+  rc pred05 $c
   rc label $c --reembed label_full
+  rc pred09 $c --reembed pred --solo-thr 0.9
 else
   cl pred05_hop2 --hop-s 2 --cache /data/diag/cache_h2
   rc pred05_hop2 --hop-s 2 --cache /data/diag/cache_h2
