@@ -122,7 +122,8 @@ def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=10.0, iters=4, marg
       the slot's solo seconds (capped at ``solo_cap``), ``emb_w`` per unit of cosine.
     Centroids start from the window with the most solo speech of both voices (or continuity
     alone) and are re-estimated from the decoded order.
-    Sets w["assign"], w["margin"] (what the best decoding loses if this window alone is flipped)
+    Sets w["assign"], w["margin"] (what the best decoding loses by flipping the cheapest run of
+    windows that contains this one)
     and w["confident"] (margin >= ``margin``) like build_memory and returns the centroids."""
     n = len(windows)
     if n == 0:
@@ -169,20 +170,20 @@ def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=10.0, iters=4, marg
         za = z[ar, ia] * wt[ar, ia].unsqueeze(-1)
         zb = z[ar, 1 - ia] * wt[ar, 1 - ia].unsqueeze(-1)
         cent = torch.stack([F.normalize(za.sum(0), dim=-1), F.normalize(zb.sum(0), dim=-1)])
-    # link confidence: how much the best order of the whole recording loses when this window
-    # alone is forced the other way (max-marginals of the chain)
-    fwd, bwd = np.zeros((n, 2)), np.zeros((n, 2))
-    fwd[0] = unary[0]
-    for t in range(1, n):
-        for s_ in (0, 1):
-            fwd[t, s_] = unary[t, s_] + max(fwd[t - 1, q] + (pair[t - 1] if q == s_ else -pair[t - 1]) for q in (0, 1))
-    for t in range(n - 2, -1, -1):
-        for s_ in (0, 1):
-            bwd[t, s_] = max(bwd[t + 1, q] + unary[t + 1, q] + (pair[t] if q == s_ else -pair[t]) for q in (0, 1))
-    mm = fwd + bwd
+    # link confidence: the cheapest flip of any run of windows containing this one (errors come
+    # as whole runs flipped where neighbours carry little evidence, not as single windows)
+    d = unary[np.arange(n), st] - unary[np.arange(n), 1 - st]  # unary loss of flipping a window
+    link = np.where(st[:-1] == st[1:], pair, -pair) * 2  # loss of cutting between t and t + 1
+    P = np.concatenate([[0.0], np.cumsum(d)])
+    left = np.concatenate([[0.0], link])  # cut before a run starting at a
+    right = np.concatenate([link, [0.0]])  # cut after a run ending at b
+    M = P[None, 1:] - P[:-1, None] + left[:, None] + right[None, :]  # run [a, b]
+    M[np.tril_indices(n, -1)] = np.inf
+    A = np.minimum.accumulate(M[:, ::-1], axis=1)[:, ::-1]  # min over b >= t
+    conf = np.minimum.accumulate(A, axis=0).diagonal()  # min over a <= t
     for t, w in enumerate(windows):
         w["assign"] = [int(st[t]), 1 - int(st[t])]
-        w["margin"] = float(mm[t, st[t]] - mm[t, 1 - st[t]])
+        w["margin"] = float(conf[t])
         w["confident"] = w["margin"] >= margin
     return [cent[0], cent[1]]
 
