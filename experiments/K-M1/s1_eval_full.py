@@ -48,6 +48,20 @@ def score_conversation(p_act: np.ndarray, act: np.ndarray, bc: np.ndarray, uncer
     order = (0, 1) if agree[0] >= agree[1] else (1, 0)  # memory slot of speaker a, b
     p = p_act[list(order)]
     r = {"tp": float((p & act).sum()), "fp": float((p & ~act).sum()), "fn": float((~p & act).sum())}
+    # collar: frames within 200 ms of a turn boundary of that person are not scored
+    edge = np.zeros_like(act)
+    for s in (0, 1):
+        ch = np.flatnonzero(np.diff(act[s].astype(np.int8))) + 1
+        for c in ch:
+            edge[s, max(0, c - 10):c + 10] = True
+    sc = ~edge
+    r.update({"tp_c": float((p & act & sc).sum()), "fp_c": float((p & ~act & sc).sum()), "fn_c": float((~p & act & sc).sum())})
+    # where false positives fall: near a boundary of that person, while only the other talks,
+    # in silence of both, away from boundaries
+    fp = p & ~act
+    other = act[::-1]
+    r.update({"fp_edge": float((fp & edge).sum()), "fp_other": float((fp & ~edge & other).sum()),
+              "fp_silence": float((fp & ~edge & ~other).sum())})
     hit = hit_any = n = 0
     for s in (0, 1):
         for r0, r1 in _runs(bc[s]):
@@ -189,7 +203,7 @@ def main():
     ap.add_argument("--data", required=True)
     ap.add_argument("--split-file", default="")
     ap.add_argument("--model", required=True)
-    ap.add_argument("--split", choices=("val", "test"), default="val")
+    ap.add_argument("--split", choices=("val", "test", "train"), default="val")
     ap.add_argument("--final", action="store_true")
     ap.add_argument("--conversations", type=int, default=40)
     ap.add_argument("--max-minutes", type=float, default=30.0)
@@ -215,13 +229,21 @@ def main():
                     "predicted solo above --solo-thr, 'label' from the labelled solo of the speaker each "
                     "slot holds (oracle embeddings), 'label_full' also replaces the slot activity by the labels")
     ap.add_argument("--solo-thr", type=float, default=0.5)
+    ap.add_argument("--render-part", choices=("all", "sources", "finish"), default="all",
+                    help="with --aug-root: the whole recording chain, only what acts on each voice (room, "
+                    "EQ, bleed, telephone band, compression) or only what acts on the mixture (noise, music, "
+                    "gain, clipping, codec)")
     a = ap.parse_args()
     lp = json.loads(a.link_params)
     link = build_memory if a.linker == "memory" else (lambda ws: link_windows(ws, **lp))
     if a.split == "test" and not a.final:
         raise SystemExit("the test split is read only with --final")
     _, val, test = splits(a.data, split_file=a.split_file or None)
-    pairs = (val if a.split == "val" else test)[: a.conversations]
+    _train = None
+    if a.split == "train":  # the train/val gap of activity; conversations spread over train
+        _train, _, _ = splits(a.data, split_file=a.split_file or None)
+        _train = _train[:: max(1, len(_train) // a.conversations)]
+    pairs = (_train if a.split == "train" else val if a.split == "val" else test)[: a.conversations]
     model = load(a.model, a.device)
     render = None
     if a.aug_root:
@@ -248,7 +270,18 @@ def main():
         if render is not None:
             rng = np.random.default_rng([30_000, k])
             rec = render.sample(rng)
-            _, _, x = render.apply(rec, sa, sb, np.repeat(act10[0] | act10[1], FRAME)[: len(sa)], rng)
+            mask = np.repeat(act10[0] | act10[1], FRAME)[: len(sa)]
+            if a.render_part == "all" or rec.chain.clean:
+                _, _, x = render.apply(rec, sa, sb, mask, rng)
+            elif a.render_part == "sources":
+                ra, rb = rec.sources(sa)[: len(sa)], rec.sources(sb)[: len(sb)]
+                x = (ra + rb) * rec.compression_gain(ra + rb)
+            else:
+                m = sa + sb
+                e = float(np.mean(m[mask] ** 2)) if mask.any() else float(np.mean(m**2)) + 1e-12
+                x, _ = rec.chain.finish(m, e, rng)
+                x = np.pad(x[: len(sa)], (0, max(0, len(sa) - len(x))))
+            x = x.astype(np.float32)
         else:
             x = sa + sb
         x = (x * np.float32(0.9 / max(float(np.abs(x).max()), 1e-4))).astype(np.float32)
@@ -297,7 +330,14 @@ def main():
     tp, fp, fn = (sum(p[x] for p in per_conv) for x in ("tp", "fp", "fn"))
     prec, rec = tp / max(tp + fp, 1e-9), tp / max(tp + fn, 1e-9)
     sw = sum(p["swap_windows"] for p in per_conv)
+    tpc, fpc, fnc = (sum(p[x] for p in per_conv) for x in ("tp_c", "fp_c", "fn_c"))
+    pc, rc_ = tpc / max(tpc + fpc, 1e-9), tpc / max(tpc + fnc, 1e-9)
+    fps = max(fp, 1e-9)
     out = {
+        "act_f1_collar200": 2 * pc * rc_ / max(pc + rc_, 1e-9),
+        "fp_share_edge": sum(p["fp_edge"] for p in per_conv) / fps,
+        "fp_share_other_talks": sum(p["fp_other"] for p in per_conv) / fps,
+        "fp_share_silence": sum(p["fp_silence"] for p in per_conv) / fps,
         "act_precision": prec, "act_recall": rec, "act_f1": 2 * prec * rec / max(prec + rec, 1e-9),
         "bc_recall": sum(p["bc_hit"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
         "bc_runs": sum(p["bc_n"] for p in per_conv),
