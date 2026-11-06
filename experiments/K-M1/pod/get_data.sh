@@ -3,7 +3,8 @@
 # against SHA256SUMS, unpacked into OUT (default /data/oy16), JOBS parts at a time. When the
 # instance role cannot read the converted copy, the source delivery is converted on the instance
 # instead (experiments/K-R1/stage.sh, about an hour).
-#   bash experiments/K-M1/pod/get_data.sh [OUT] [JOBS]
+#   [KEEP=folders.txt] bash experiments/K-M1/pod/get_data.sh [OUT] [JOBS]
+# KEEP: one conversation folder per line; every other conversation is deleted as it unpacks.
 set -euo pipefail
 bucket=s3://manifestro-dataset-876108973178-us-east-1-an/datasets
 src=$bucket/open-yap-1k_2026-11-04_wav_0e7bcf1e_0d3abb77_16k-npy-act
@@ -37,11 +38,14 @@ open(sys.argv[1], "w").write(h.hexdigest())' "/data/pack/$file.sha" \
     (cd "$out" && cut -d/ -f1 "/data/pack/$file.list" | sort -u | xargs -r rm -rf)
     return 1
   fi
+  if [[ -n "${KEEP:-}" ]]; then  # keep only the listed conversation folders (disk)
+    cut -d/ -f1 "/data/pack/$file.list" | sort -u | grep -vxFf "$KEEP" | (cd "$out" && xargs -r rm -rf)
+  fi
   touch "$out/.parts_done/$file" && rm -f "/data/pack/$file.sha" "/data/pack/$file.list"
   echo "done $file"
 }
 export -f one
-export src out
+export src out KEEP
 grep ' part-.*\.tar$' "$out/SHA256SUMS" | xargs -P "$jobs" -n 2 bash -c 'one "$0" "$1"'
 echo "parts done: $(ls "$out/.parts_done" | wc -l) of $(grep -c ' part-.*\.tar$' "$out/SHA256SUMS")"
 echo "conversations: $(ls -d "$out"/conv_* | wc -l)"

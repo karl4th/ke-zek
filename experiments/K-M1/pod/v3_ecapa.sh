@@ -28,13 +28,17 @@ snapshot_download("manifestro/kezek-v1-bench", repo_type="dataset", revision="d0
                   local_dir="/data/bench", token=t)
 print("MODELS READY")
 PY
-( bash "$here/get_aug.sh" > /data/get_aug.log 2>&1 ) &
-( python experiments/K-M1/ecapa_ft.py --prep --vox /data/vox --shards 10 > /data/vox_prep.log 2>&1 ) &
+split=$repo/experiments/K-R1/split_round1.json
+# only validation and test conversations are needed here: all of Open Yap does not fit next to VoxCeleb2
+python -c "import json; d = json.load(open('$split')); print('\n'.join('conv_' + c for c in d['val'] + d['test']))" > /data/keep.txt
+export KEEP=/data/keep.txt
+[ -d /data/oy16 ] && (cd /data/oy16 && ls -d conv_* | grep -vxFf "$KEEP" | xargs -r rm -rf)
+grep -q "AUG READY" /data/get_aug.log 2>/dev/null || ( bash "$here/get_aug.sh" > /data/get_aug.log 2>&1 ) &
+grep -q "PREP DONE" /data/vox_prep.log 2>/dev/null || ( python experiments/K-M1/ecapa_ft.py --prep --vox /data/vox --shards 10 > /data/vox_prep.log 2>&1 ) &
 for i in 1 2 3; do bash "$here/get_data.sh" /data/oy16 6 >> /data/get_data.log 2>&1 && break; done
 wait
 grep -q "AUG READY" /data/get_aug.log || { echo "aug download failed"; exit 1; }
 grep -q "PREP DONE" /data/vox_prep.log || { echo "voxceleb prep failed"; exit 1; }
-split=$repo/experiments/K-R1/split_round1.json
 model=/data/init/k-v3-v3s1c/best.pt
 mkdir -p /data/fe /data/runs
 
