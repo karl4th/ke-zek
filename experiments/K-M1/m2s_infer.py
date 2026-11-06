@@ -113,7 +113,7 @@ def _solo(w):
     return torch.stack([p[0] * (1 - p[1]), p[1] * (1 - p[0])])
 
 
-def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=4.0, iters=4, margin=0.2):
+def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=10.0, iters=4, margin=1.0):
     """Global A/B linking of all windows at once (instead of the greedy memory):
     a binary chain over windows (keep or swap their slot order) solved exactly by Viterbi.
     * Neighbours agree through their overlap: seconds of solo activity that line up when both
@@ -122,7 +122,8 @@ def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=4.0, iters=4, margi
       the slot's solo seconds (capped at ``solo_cap``), ``emb_w`` per unit of cosine.
     Centroids start from the window with the most solo speech of both voices (or continuity
     alone) and are re-estimated from the decoded order.
-    Sets w["assign"], w["margin"], w["confident"] like build_memory and returns the centroids."""
+    Sets w["assign"], w["margin"] (what the best decoding loses if this window alone is flipped)
+    and w["confident"] (margin >= ``margin``) like build_memory and returns the centroids."""
     n = len(windows)
     if n == 0:
         return [None, None]
@@ -168,9 +169,20 @@ def link_windows(windows, overlap_w=1.0, emb_w=4.0, solo_cap=4.0, iters=4, margi
         za = z[ar, ia] * wt[ar, ia].unsqueeze(-1)
         zb = z[ar, 1 - ia] * wt[ar, 1 - ia].unsqueeze(-1)
         cent = torch.stack([F.normalize(za.sum(0), dim=-1), F.normalize(zb.sum(0), dim=-1)])
+    # link confidence: how much the best order of the whole recording loses when this window
+    # alone is forced the other way (max-marginals of the chain)
+    fwd, bwd = np.zeros((n, 2)), np.zeros((n, 2))
+    fwd[0] = unary[0]
+    for t in range(1, n):
+        for s_ in (0, 1):
+            fwd[t, s_] = unary[t, s_] + max(fwd[t - 1, q] + (pair[t - 1] if q == s_ else -pair[t - 1]) for q in (0, 1))
+    for t in range(n - 2, -1, -1):
+        for s_ in (0, 1):
+            bwd[t, s_] = max(bwd[t + 1, q] + unary[t + 1, q] + (pair[t] if q == s_ else -pair[t]) for q in (0, 1))
+    mm = fwd + bwd
     for t, w in enumerate(windows):
         w["assign"] = [int(st[t]), 1 - int(st[t])]
-        w["margin"] = float(abs(unary[t, 0] - unary[t, 1]) / max(emb_w, 1e-9))
+        w["margin"] = float(mm[t, st[t]] - mm[t, 1 - st[t]])
         w["confident"] = w["margin"] >= margin
     return [cent[0], cent[1]]
 

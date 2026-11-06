@@ -10,7 +10,8 @@ Counts, pooled over conversations:
 * link_errors: windows whose own slot order is clear from the labels but linked the other way;
 * inner_flips: windows whose two halves prefer different slot orders (the model swaps slots
   inside a window; no linking can fix those);
-* conversations with any link error.
+* conversations with any link error;
+* kept@tau / err@tau: clear windows with link confidence >= tau and the link errors among them.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ from m2s_model import frames_20ms  # noqa: E402
 from rdata import _Conversation, splits  # noqa: E402
 
 
+TAUS = (0.5, 1, 2, 4, 8)
+
+
 def order_score(p: np.ndarray, act: np.ndarray):
     """(agree keeping slot order, agree crossed) in frames; p, act [2, F] bool."""
     return (float((p[0] & act[0]).sum() + (p[1] & act[1]).sum()),
@@ -49,7 +53,8 @@ def main():
     a = ap.parse_args()
     lp = json.loads(a.link_params)
     _, val, _ = splits(a.data, split_file=a.split_file or None)
-    tot = {"windows": 0, "clear": 0, "link_errors": 0, "inner_flips": 0, "conv_with_link_error": 0, "conv": 0}
+    tot = {f"{k}@{t}": 0 for t in TAUS for k in ("kept", "err")}
+    tot.update({"windows": 0, "clear": 0, "link_errors": 0, "inner_flips": 0, "conv_with_link_error": 0, "conv": 0})
     for pair in val[: a.conversations]:
         f = f"{a.cache}/{pair.conversation_id}{'_rec' if a.rec else ''}.pt"
         if not os.path.exists(f):
@@ -75,12 +80,12 @@ def main():
             h = L // 2
             k1, x1 = order_score(p[:, :h], lab[:, :h])
             k2, x2 = order_score(p[:, h:], lab[:, h:])
-            rows.append((w["assign"][0], k, x, (k1 - x1), (k2 - x2), lab[:, :h].sum(1).min(), lab[:, h:].sum(1).min()))
+            rows.append((w["assign"][0], w["margin"], k, x, (k1 - x1), (k2 - x2), lab[:, :h].sum(1).min(), lab[:, h:].sum(1).min()))
             # linked slot of A is assign[0]; true slot of speaker a in this window is 0 if k > x
             agree[0 if (w["assign"][0] == 0) == (k >= x) else 1] += abs(k - x)
         conv_order = 0 if agree[0] >= agree[1] else 1  # 0: memory A is speaker a
         errs = 0
-        for slot_a, k, x, d1, d2, m1, m2 in rows:
+        for slot_a, mg, k, x, d1, d2, m1, m2 in rows:
             tot["windows"] += 1
             if abs(k - x) < 0.3 * (k + x):
                 continue
@@ -88,6 +93,10 @@ def main():
             true_slot_a = 0 if k > x else 1
             linked_slot_a = slot_a if conv_order == 0 else 1 - slot_a
             errs += int(true_slot_a != linked_slot_a)
+            for tau in TAUS:
+                if mg >= tau:
+                    tot[f"kept@{tau}"] += 1
+                    tot[f"err@{tau}"] += int(true_slot_a != linked_slot_a)
             if m1 >= 25 and m2 >= 25 and d1 * d2 < 0 and min(abs(d1), abs(d2)) > 25:
                 tot["inner_flips"] += 1
         tot["link_errors"] += errs
