@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Kezek v3 stage 1 diagnosis (K-V3-S1-DIAG), extra questions: the v3s1c model with packed solo
-# audio, no training, full recordings: activity F1 with a 200 ms collar and where false positives
-# fall (validation, clean), oracle embeddings with predicted activity, the train/val gap (30 train conversations, clean), and which part of
-# the recording chain hurts (validation rendered with only the per-voice part, only the mixture part).
+# Kezek v3 stage 1 diagnosis (K-V3-S1-DIAG), rendered cells and extra questions: the v3s1c model
+# with packed solo audio, no training, full recordings of the validation conversations.
+#   rendered (recordings over 30 min rendered in 20 min pieces): base (solo threshold 0.5),
+#   labelled activity (oracle), solo threshold 0.9, only the per-voice part of the chain, only the
+#   mixture part;
+#   clean: F1 with a 200 ms collar and where false positives fall, oracle embeddings with
+#   predicted activity, solo thresholds 0.3 and 0.2, the train/val gap (30 train conversations).
 # Results to HF k-v3-diag/extra/. Every run logs to the Airon tracker.
 #   nohup bash ~/ke-zek/experiments/K-M1/pod/v3_diag_extra.sh > /data/v3_diag_extra.log 2>&1 &
 set -uo pipefail
@@ -32,21 +35,28 @@ wait
 grep -q "AUG READY" /data/get_aug.log || { echo "aug download failed"; exit 1; }
 mkdir -p /data/dx
 e="python experiments/K-M1/s1_eval_full.py --data /data/oy16 --split-file $split --max-minutes 100000 --model /data/init/k-v3-v3s1c/best.pt"
-$e --conversations 113 --cache /data/dx/cache_h8 --tag _collar --out /data/dx/collar_clean.json > /data/dx/collar_clean.log 2>&1 &
-$e --split train --conversations 30 --tag _train30 --out /data/dx/train30_clean.json > /data/dx/train30_clean.log 2>&1 &
+v="$e --conversations 113"
+rendered() {  # one at a time: a rendered piece takes several GB of RAM
+  c="--cache /data/dx/cache_h8 --aug-root /data/aug"
+  $v $c --tag _pred05 --out /data/dx/pred05_rec.json > /data/dx/pred05_rec.log 2>&1
+  $v $c --reembed label_full --tag _label --out /data/dx/label_rec.json > /data/dx/label_rec.log 2>&1
+  $v $c --reembed pred --solo-thr 0.9 --tag _pred09 --out /data/dx/pred09_rec.json > /data/dx/pred09_rec.log 2>&1
+  for part in sources finish; do
+    $v --aug-root /data/aug --render-part $part --tag _rec_$part --out /data/dx/rec_${part}.json > /data/dx/rec_${part}.log 2>&1
+  done
+}
+clean() {
+  c="--cache /data/dx/cache_h8"
+  $v $c --tag _collar --out /data/dx/collar_clean.json > /data/dx/collar_clean.log 2>&1
+  $v $c --reembed label --tag _oracle_emb --out /data/dx/oracle_emb_clean.json > /data/dx/oracle_emb_clean.log 2>&1
+  for t in 0.3 0.2; do
+    $v $c --reembed pred --solo-thr $t --tag _solo$t --out /data/dx/solo${t}_clean.json > /data/dx/solo${t}_clean.log 2>&1
+  done
+  $e --split train --conversations 30 --tag _train30 --out /data/dx/train30_clean.json > /data/dx/train30_clean.log 2>&1
+}
+rendered &
+clean &
 wait
-# oracle embeddings only (labelled solo, predicted activity): embeddings or activity?
-$e --conversations 113 --cache /data/dx/cache_h8 --reembed label --tag _oracle_emb --out /data/dx/oracle_emb_clean.json > /data/dx/oracle_emb_clean.log 2>&1
-# more solo audio for the embeddings: a lower threshold on the predicted solo
-for t in 0.3 0.2; do
-  $e --conversations 113 --cache /data/dx/cache_h8 --reembed pred --solo-thr $t --tag _solo$t --out /data/dx/solo${t}_clean.json > /data/dx/solo${t}_clean.log 2>&1 &
-done
-wait
-# a full rendered recording takes about 12 GB of RAM: one at a time
-for part in sources finish; do
-  $e --conversations 113 --aug-root /data/aug --render-part $part --tag _rec_$part \
-    --out /data/dx/rec_${part}.json > /data/dx/rec_${part}.log 2>&1
-done
 for f in /data/dx/*.log; do
   grep -q SUMMARY "$f" && echo "$(basename "$f" .log) $(grep -h SUMMARY "$f" | sed 's/SUMMARY //')"
 done > /data/dx/summary_extra.txt

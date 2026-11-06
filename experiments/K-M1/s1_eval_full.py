@@ -86,6 +86,20 @@ def score_conversation(p_act: np.ndarray, act: np.ndarray, bc: np.ndarray, uncer
     return r
 
 
+def render_part(render, rec, sa, sb, mask, rng, part="all"):
+    """One recording chain on clean tracks: the whole chain, only the per-voice part (room, EQ,
+    bleed, telephone band, compression) or only the mixture part (noise, music, gain, clipping, codec)."""
+    if part == "all" or rec.chain.clean:
+        return render.apply(rec, sa, sb, mask, rng)[2]
+    if part == "sources":
+        ra, rb = rec.sources(sa)[: len(sa)], rec.sources(sb)[: len(sb)]
+        return (ra + rb) * rec.compression_gain(ra + rb)
+    m = sa + sb
+    e = float(np.mean(m[mask] ** 2)) if mask.any() else float(np.mean(m**2)) + 1e-12
+    x, _ = rec.chain.finish(m, e, rng)
+    return np.pad(x[: len(sa)], (0, max(0, len(sa) - len(x))))
+
+
 @torch.no_grad()
 def references(tracks, act, spk, device, cap_s=30.0):
     """Clean reference embeddings of each speaker from their own track, one per half of the
@@ -271,17 +285,11 @@ def main():
             rng = np.random.default_rng([30_000, k])
             rec = render.sample(rng)
             mask = np.repeat(act10[0] | act10[1], FRAME)[: len(sa)]
-            if a.render_part == "all" or rec.chain.clean:
-                _, _, x = render.apply(rec, sa, sb, mask, rng)
-            elif a.render_part == "sources":
-                ra, rb = rec.sources(sa)[: len(sa)], rec.sources(sb)[: len(sb)]
-                x = (ra + rb) * rec.compression_gain(ra + rb)
-            else:
-                m = sa + sb
-                e = float(np.mean(m[mask] ** 2)) if mask.any() else float(np.mean(m**2)) + 1e-12
-                x, _ = rec.chain.finish(m, e, rng)
-                x = np.pad(x[: len(sa)], (0, max(0, len(sa) - len(x))))
-            x = x.astype(np.float32)
+            # recordings over 30 min are rendered in 20 min pieces with the same chain (a 126 min
+            # recording needs more than 15 GB in one piece); shorter ones in one piece as before
+            step = len(sa) if len(sa) <= 30 * 60 * SR else 20 * 60 * SR
+            x = np.concatenate([render_part(render, rec, sa[i:i + step], sb[i:i + step], mask[i:i + step], rng, a.render_part)
+                                for i in range(0, len(sa), step)]).astype(np.float32)
         else:
             x = sa + sb
         x = (x * np.float32(0.9 / max(float(np.abs(x).max()), 1e-4))).astype(np.float32)
