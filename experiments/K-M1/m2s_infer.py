@@ -57,23 +57,39 @@ def load(path: str, device: str) -> TwoBlock:
 
 
 @torch.no_grad()
-def identity_pass(model, x: np.ndarray, device: str, win_s=30.0, hop_s=15.0):
+def batches(lengths, size):
+    """Indices grouped by equal length, ``size`` at a time (windows of one recording are all one
+    length except when the recording is shorter than a window)."""
+    groups = {}
+    for i, L in enumerate(lengths):
+        groups.setdefault(L, []).append(i)
+    for idx in groups.values():
+        for j in range(0, len(idx), size):
+            yield idx[j:j + size]
+
+
+def identity_pass(model, x: np.ndarray, device: str, win_s=30.0, hop_s=15.0, batch=None):
+    """Every window of x through the identity encoder, ``batch`` windows at a time (default
+    KEZEK_EVAL_BATCH or 8)."""
+    batch = batch or int(os.environ.get("KEZEK_EVAL_BATCH", "8"))
     win, hop = int(win_s * SR), int(hop_s * SR)
     n = len(x)
     starts = list(range(0, max(n - win, 0) + 1, hop))
     if starts[-1] + win < n:
         starts.append(max(n - win, 0))
-    out = []
-    for s in starts:
-        seg = torch.from_numpy(np.ascontiguousarray(x[s:s + win]))[None].to(device)
+    out = [None] * len(starts)
+    for idx in batches([min(s + win, n) - s for s in starts], batch):
+        seg = torch.from_numpy(np.stack([x[starts[i]:starts[i] + win] for i in idx])).to(device)
         logits, z = model.enc(seg)
-        p = torch.sigmoid(logits[0])
-        solo = torch.stack([p[0] * (1 - p[1]), p[1] * (1 - p[0])])
-        w = {"start": s, "end": min(s + win, n), "z": z[0].cpu(),
-             "solo_s": (solo.sum(-1) * 0.02).cpu().tolist(), "p": p.cpu()}
-        if getattr(model.enc, "last_powerset", None) is not None:  # [4, F]: silence, slot 0, slot 1, both
-            w["ps"] = torch.softmax(model.enc.last_powerset[0].float(), -1).T.half().cpu()
-        out.append(w)
+        ps = getattr(model.enc, "last_powerset", None)
+        for b, i in enumerate(idx):
+            p = torch.sigmoid(logits[b])
+            solo = torch.stack([p[0] * (1 - p[1]), p[1] * (1 - p[0])])
+            w = {"start": starts[i], "end": min(starts[i] + win, n), "z": z[b].cpu(),
+                 "solo_s": (solo.sum(-1) * 0.02).cpu().tolist(), "p": p.cpu()}
+            if ps is not None:  # [4, F]: silence, slot 0, slot 1, both
+                w["ps"] = torch.softmax(ps[b].float(), -1).T.half().cpu()
+            out[i] = w
     return out
 
 

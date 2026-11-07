@@ -129,27 +129,38 @@ def tsvad_pass(model, heads, x, windows, cents, device, iters=1, prof_s=60.0):
     spk = model.enc._speaker[0]
     nf = len(x) // 320 + 1
     z = torch.stack([F.normalize(c.float(), dim=-1) for c in cents])[None].to(device)
-    feats = []
-    for w in windows:
-        seg = torch.from_numpy(np.ascontiguousarray(x[w["start"]:w["end"]]))[None].to(device)
-        hs = {id(getattr(hd, "enc", model.enc)): None for hd in heads}
-        for k in hs:
-            enc = next(getattr(hd, "enc", model.enc) for hd in heads if id(getattr(hd, "enc", model.enc)) == k)
-            hs[k] = enc.frames(seg, return_hidden=True).half()
-        feats.append((hs, {sc: segment_embeddings(spk, seg, *sc) for sc in {sc for hd in heads for sc in hd.scales}}))
+    from m2s_infer import batches
+
+    bs = int(os.environ.get("KEZEK_EVAL_BATCH", "8"))
+    encs = {}
+    for hd in heads:
+        enc = getattr(hd, "enc", model.enc)
+        encs[id(enc)] = enc
+    scales = sorted({sc for hd in heads for sc in hd.scales})
+    feats = [None] * len(windows)  # per window: ({encoder id: frames [F, H]}, {scale: segment embeddings [n, D]})
+    for idx in batches([w["end"] - w["start"] for w in windows], bs):
+        seg = torch.from_numpy(np.stack([x[windows[i]["start"]:windows[i]["end"]] for i in idx])).to(device)
+        hb = {k: enc.frames(seg, return_hidden=True).half() for k, enc in encs.items()}
+        eb = {sc: segment_embeddings(spk, seg, *sc) for sc in scales}
+        for b, i in enumerate(idx):
+            feats[i] = ({k: v[b] for k, v in hb.items()}, {sc: v[b] for sc, v in eb.items()})
     for it in range(iters):
-        acc, cnt, ps = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32), []
-        for w, (hs, e) in zip(windows, feats):
-            nfw = next(iter(hs.values())).shape[1]
-            sims = {sc: similarity(emb, z, nfw) for sc, emb in e.items()}
-            p = torch.stack([torch.sigmoid(hd(hs[id(getattr(hd, "enc", model.enc))].float(), z,
-                                              torch.stack([sims[sc] for sc in hd.scales], 1) if hd.scales else None))[0]
-                             for hd in heads]).mean(0).float().cpu().numpy()
-            f0 = w["start"] // 320
-            L = min(p.shape[1], nf - f0)
-            acc[:, f0:f0 + L] += p[:, :L]
-            cnt[f0:f0 + L] += 1
-            ps.append(p)
+        acc, cnt, ps = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32), [None] * len(windows)
+        for idx in batches([w["end"] - w["start"] for w in windows], 4 * bs):
+            B = len(idx)
+            zb = z.expand(B, -1, -1)
+            nfw = next(iter(feats[idx[0]][0].values())).shape[0]
+            sims = {sc: similarity(torch.stack([feats[i][1][sc] for i in idx]), zb, nfw) for sc in scales}
+            pb = torch.stack([torch.sigmoid(hd(torch.stack([feats[i][0][id(getattr(hd, "enc", model.enc))] for i in idx]).float(),
+                                                zb, torch.stack([sims[sc] for sc in hd.scales], 1) if hd.scales else None))
+                              for hd in heads]).mean(0).float().cpu().numpy()  # [B, 2, F]
+            for b, i in enumerate(idx):
+                p = pb[b]
+                f0 = windows[i]["start"] // 320
+                L = min(p.shape[1], nf - f0)
+                acc[:, f0:f0 + L] += p[:, :L]
+                cnt[f0:f0 + L] += 1
+                ps[i] = p
         act = acc / np.maximum(cnt, 1)
         if it + 1 < iters:
             new = []
