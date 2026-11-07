@@ -86,6 +86,23 @@ def score_conversation(p_act: np.ndarray, act: np.ndarray, bc: np.ndarray, uncer
     return r
 
 
+def recording(sa, sb, act10, k, render, part="all"):
+    """The mono input of conversation number ``k``: the clean sum, or the sum through the recording
+    chain drawn for that conversation (seed 30000, k); peak 0.9."""
+    if render is not None:
+        rng = np.random.default_rng([30_000, k])
+        rec = render.sample(rng)
+        mask = np.repeat(act10[0] | act10[1], FRAME)[: len(sa)]
+        # recordings over 30 min are rendered in 20 min pieces with the same chain (a 126 min
+        # recording needs more than 15 GB in one piece); shorter ones in one piece as before
+        step = len(sa) if len(sa) <= 30 * 60 * SR else 20 * 60 * SR
+        x = np.concatenate([render_part(render, rec, sa[i:i + step], sb[i:i + step], mask[i:i + step], rng, part)
+                            for i in range(0, len(sa), step)]).astype(np.float32)
+    else:
+        x = sa + sb
+    return (x * np.float32(0.9 / max(float(np.abs(x).max()), 1e-4))).astype(np.float32)
+
+
 def render_part(render, rec, sa, sb, mask, rng, part="all"):
     """One recording chain on clean tracks: the whole chain, only the per-voice part (room, EQ,
     bleed, telephone band, compression) or only the mixture part (noise, music, gain, clipping, codec)."""
@@ -325,6 +342,8 @@ def main():
                     "profiles from the solo speech the previous pass found")
     ap.add_argument("--tsvad", default="", help="ProfileHead checkpoint (train_tsvad.py): after linking, the "
                     "activity of A and B from the encoder features and the two recording profiles")
+    ap.add_argument("--x-cache", default="", help="directory of rendered recordings from render_cache.py "
+                    "(<conv>_<render-part>.npy, int16); conversations not in it are rendered on the fly")
     ap.add_argument("--render-part", choices=("all", "sources", "finish"), default="all",
                     help="with --aug-root: the whole recording chain, only what acts on each voice (room, "
                     "EQ, bleed, telephone band, compression) or only what acts on the mixture (noise, music, "
@@ -382,18 +401,12 @@ def main():
         nfr = min(c.frames, int(a.max_minutes * 6000))
         sa, sb = c.audio(0, 0, nfr), c.audio(1, 0, nfr)
         act10 = np.stack([c.act[0][:nfr], c.act[1][:nfr]])
-        if render is not None:
-            rng = np.random.default_rng([30_000, k])
-            rec = render.sample(rng)
-            mask = np.repeat(act10[0] | act10[1], FRAME)[: len(sa)]
-            # recordings over 30 min are rendered in 20 min pieces with the same chain (a 126 min
-            # recording needs more than 15 GB in one piece); shorter ones in one piece as before
-            step = len(sa) if len(sa) <= 30 * 60 * SR else 20 * 60 * SR
-            x = np.concatenate([render_part(render, rec, sa[i:i + step], sb[i:i + step], mask[i:i + step], rng, a.render_part)
-                                for i in range(0, len(sa), step)]).astype(np.float32)
+        xf = f"{a.x_cache}/{pair.conversation_id}_{a.render_part}.npy" if a.x_cache and render is not None else ""
+        if xf and os.path.exists(xf):  # rendered once by render_cache.py (16-bit)
+            x = np.load(xf).astype(np.float32) / 32767
+            x = np.pad(x[: len(sa)], (0, max(0, len(sa) - len(x))))
         else:
-            x = sa + sb
-        x = (x * np.float32(0.9 / max(float(np.abs(x).max()), 1e-4))).astype(np.float32)
+            x = recording(sa, sb, act10, k, render, a.render_part)
         cf = f"{a.cache}/{pair.conversation_id}{'_rec' if render is not None else ''}.pt" if a.cache else ""
         if cf and os.path.exists(cf):
             windows = torch.load(cf)
