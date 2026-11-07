@@ -147,6 +147,16 @@ def words_mask(path: Path, n: int, pad: float = 0.15) -> np.ndarray:
     return m
 
 
+def close_gaps(a: np.ndarray, gap: int) -> np.ndarray:
+    """Fill silent runs shorter than ``gap`` frames that lie between two active runs."""
+    a = a.copy()
+    r = _runs(~a)
+    for s, e in r:
+        if s > 0 and e < len(a) and e - s < gap:
+            a[s:e] = True
+    return a
+
+
 class _Conversation:
     """Memory-mapped tracks and cached activity of one conversation."""
 
@@ -163,6 +173,9 @@ class _Conversation:
             pad = float(os.environ.get("KEZEK_WORD_PAD", "0.15"))
             self.act = tuple(a & words_mask(d / f"speaker_{s}_transcript.json", n, pad)
                              for a, s in zip(self.act, "ab"))
+            gap = int(round(float(os.environ.get("KEZEK_WORD_GAP", "0")) * 100))
+            if gap > 0:  # pauses shorter than this inside one person's speech are speech (one utterance)
+                self.act = tuple(close_gaps(a, gap) for a in self.act)
         self.frames = n
         self.overlap = np.flatnonzero(self.act[0] & self.act[1])
         # target-only runs of at least 0.5 s, per side: candidate enrollment pieces
