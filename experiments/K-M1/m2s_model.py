@@ -246,18 +246,26 @@ class ProfileHead(nn.Module):
 
 
 @torch.no_grad()
+def segment_embeddings(spk, wav: torch.Tensor, seg_s: float = 1.5, hop_s: float = 0.5) -> torch.Tensor:
+    """Unit-norm speaker embedding of each ``seg_s`` segment (every ``hop_s``, centred) of wav [B, T]: [B, n, D]."""
+    seg, hop = int(seg_s * 16_000), int(hop_s * 16_000)
+    B = wav.shape[0]
+    pieces = F.pad(wav, (seg // 2, seg // 2)).unfold(1, seg, hop)  # [B, n, seg]
+    n = pieces.shape[1]
+    with torch.autocast(wav.device.type, enabled=False):
+        return F.normalize(spk(pieces.reshape(B * n, seg).float()).float(), dim=-1).view(B, n, -1)
+
+
+def similarity(e: torch.Tensor, z: torch.Tensor, nf: int) -> torch.Tensor:
+    """Cosine of segment embeddings e [B, n, D] with profiles z [B, 2, D] on ``nf`` frames: [B, 2, nf]."""
+    return F.interpolate(torch.einsum("bnd,bsd->bsn", e, z.float()), size=nf, mode="linear", align_corners=False)
+
+
+@torch.no_grad()
 def frame_similarity(spk, wav: torch.Tensor, z: torch.Tensor, nf: int, seg_s: float = 1.5, hop_s: float = 0.5) -> torch.Tensor:
     """Cosine of the speaker embedding of each ``seg_s`` segment (every ``hop_s``) of ``wav`` [B, T]
     with each profile z [B, 2, D], interpolated onto ``nf`` frames: [B, 2, nf]."""
-    seg, hop = int(seg_s * 16_000), int(hop_s * 16_000)
-    B, T = wav.shape
-    x = F.pad(wav, (seg // 2, seg // 2))
-    pieces = x.unfold(1, seg, hop)  # [B, n, seg]
-    n = pieces.shape[1]
-    with torch.autocast(wav.device.type, enabled=False):
-        e = F.normalize(spk(pieces.reshape(B * n, seg).float()).float(), dim=-1).view(B, n, -1)
-    c = torch.einsum("bnd,bsd->bsn", e, z.float())  # [B, 2, n]
-    return F.interpolate(c, size=nf, mode="linear", align_corners=False)
+    return similarity(segment_embeddings(spk, wav, seg_s, hop_s), z, nf)
 
 
 class ConditionedSeparator(nn.Module):

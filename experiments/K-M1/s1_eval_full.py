@@ -101,29 +101,50 @@ def render_part(render, rec, sa, sb, mask, rng, part="all"):
 
 
 @torch.no_grad()
-def tsvad_pass(model, head, x, windows, cents, device):
+def tsvad_pass(model, head, x, windows, cents, device, iters=1, prof_s=60.0):
     """Activity of A and B [2, F20] from the profile head on every window (A, B = the linked
-    recording centroids), averaged where windows overlap; each window's p and assign are set to
+    recording centroids), averaged where windows overlap. With ``iters`` > 1 the profiles are then
+    taken again from the solo speech of A and of B over the whole recording (up to ``prof_s``
+    seconds each, spread over it) and the head runs again. Each window's p and assign are set to
     the fixed A/B order so the window metrics see this activity."""
+    from m2s_model import segment_embeddings, similarity
+
+    spk = model.enc._speaker[0]
     nf = len(x) // 320 + 1
-    acc, cnt = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32)
     z = torch.stack([F.normalize(c.float(), dim=-1) for c in cents])[None].to(device)
+    feats = []
     for w in windows:
         seg = torch.from_numpy(np.ascontiguousarray(x[w["start"]:w["end"]]))[None].to(device)
-        h = model.enc.frames(seg, return_hidden=True)
-        sim = None
-        if head.sim is not None:
-            from m2s_model import frame_similarity
-
-            sim = frame_similarity(model.enc._speaker[0], seg, z, h.shape[1])
-        p = torch.sigmoid(head(h, z, sim))[0].float().cpu().numpy()
-        f0 = w["start"] // 320
-        L = min(p.shape[1], nf - f0)
-        acc[:, f0:f0 + L] += p[:, :L]
-        cnt[f0:f0 + L] += 1
+        h = model.enc.frames(seg, return_hidden=True).half()
+        feats.append((h, segment_embeddings(spk, seg) if head.sim is not None else None))
+    for it in range(iters):
+        acc, cnt, ps = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32), []
+        for w, (h, e) in zip(windows, feats):
+            sim = similarity(e, z, h.shape[1]) if e is not None else None
+            p = torch.sigmoid(head(h.float(), z, sim))[0].float().cpu().numpy()
+            f0 = w["start"] // 320
+            L = min(p.shape[1], nf - f0)
+            acc[:, f0:f0 + L] += p[:, :L]
+            cnt[f0:f0 + L] += 1
+            ps.append(p)
+        act = acc / np.maximum(cnt, 1)
+        if it + 1 < iters:
+            new = []
+            for s in (0, 1):
+                fr = np.flatnonzero((act[s] > 0.5) & (act[1 - s] < 0.5))
+                if len(fr) < 100:  # under 2 s of solo: keep the linked profile
+                    new.append(z[0, s])
+                    continue
+                fr = fr[np.linspace(0, len(fr) - 1, min(len(fr), int(prof_s * 50))).astype(int)]
+                idx = (fr[:, None] * 320 + np.arange(320)[None]).ravel()
+                idx = idx[idx < len(x)]
+                y = torch.from_numpy(np.ascontiguousarray(x[idx]))[None].to(device).float()
+                new.append(F.normalize(spk(y).float(), dim=-1)[0])
+            z = torch.stack(new)[None]
+    for w, p in zip(windows, ps):
         w["z"] = w["z"][list(w["assign"])]  # slot embeddings in A/B order too (identity metric)
         w["p"], w["assign"] = torch.from_numpy(p), [0, 1]
-    return acc / np.maximum(cnt, 1)
+    return act
 
 
 @torch.no_grad()
@@ -294,6 +315,8 @@ def main():
                     "with overlap kept only where the weaker slot is above --overlap-thr; with powerset or "
                     "overlap the slot embeddings are taken again from the new solo")
     ap.add_argument("--overlap-thr", type=float, default=0.8)
+    ap.add_argument("--tsvad-iters", type=int, default=1, help="profile head passes; later ones take the "
+                    "profiles from the solo speech the previous pass found")
     ap.add_argument("--tsvad", default="", help="ProfileHead checkpoint (train_tsvad.py): after linking, the "
                     "activity of A and B from the encoder features and the two recording profiles")
     ap.add_argument("--render-part", choices=("all", "sources", "finish"), default="all",
@@ -375,7 +398,7 @@ def main():
         if a.relink:
             relink_segments(windows, x, model.enc._speaker[0], a.device, **json.loads(a.relink))
         if tsvad is not None and cents[0] is not None and cents[1] is not None:
-            p_act = tsvad_pass(model, tsvad, x, windows, cents, a.device) > a.threshold
+            p_act = tsvad_pass(model, tsvad, x, windows, cents, a.device, a.tsvad_iters) > a.threshold
         else:
             p_act = memory_activity(windows, len(x), a.combine) > a.threshold
         nf = p_act.shape[1]
