@@ -217,12 +217,14 @@ class ProfileHead(nn.Module):
     Conformer shared by both streams; each output frame sees both streams, so it can tell whose
     voice is present rather than whether any voice is."""
 
-    def __init__(self, hdim: int = 256, zdim: int = 192, layers: int = 2, sim: bool = False):
+    def __init__(self, hdim: int = 256, zdim: int = 192, layers: int = 2, sim: bool = False, scales=None):
         super().__init__()
         from torchaudio.models import Conformer
 
-        # sim: also the cosine of short-segment speaker embeddings with each profile, per frame
-        self.sim = nn.Linear(2, hdim) if sim else None
+        # sim: also the cosine of short-segment speaker embeddings with each profile, per frame, for
+        # each (segment s, hop s) in scales
+        self.scales = [tuple(x) for x in (scales or ([(1.5, 0.5)] if sim else []))]
+        self.sim = nn.Linear(2 * len(self.scales), hdim) if self.scales else None
         self.film = nn.Linear(2 * zdim, 2 * hdim)
         nn.init.zeros_(self.film.weight)
         nn.init.zeros_(self.film.bias)
@@ -231,14 +233,17 @@ class ProfileHead(nn.Module):
         self.out = nn.Linear(2 * hdim, 1)
 
     def forward(self, h: torch.Tensor, z: torch.Tensor, sim: torch.Tensor | None = None) -> torch.Tensor:
-        """h [B, F, hdim], z [B, 2, zdim] (unit norm), sim [B, 2, F] (with ``sim``) -> logits [B, 2, F] (A, B)."""
+        """h [B, F, hdim], z [B, 2, zdim] (unit norm), sim [B, scales, 2, F] or [B, 2, F] -> logits [B, 2, F] (A, B)."""
+        if sim is not None and sim.dim() == 3:
+            sim = sim[:, None]
         lengths = torch.full((h.shape[0],), h.shape[1], device=h.device, dtype=torch.long)
         streams = []
         for s in (0, 1):
             g, b = self.film(torch.cat([z[:, s], z[:, 1 - s]], -1)).chunk(2, -1)
             u = h * (1 + g[:, None]) + b[:, None]
             if self.sim is not None:
-                u = u + self.sim(torch.stack([sim[:, s], sim[:, 1 - s]], -1).to(u.dtype))
+                f = torch.cat([torch.stack([sim[:, k, s], sim[:, k, 1 - s]], -1) for k in range(sim.shape[1])], -1)
+                u = u + self.sim(f.to(u.dtype))
             u, _ = self.conformer(u, lengths)
             streams.append(u)
         return torch.stack([self.out(torch.cat([streams[s], streams[1 - s]], -1)).squeeze(-1)
@@ -262,10 +267,10 @@ def similarity(e: torch.Tensor, z: torch.Tensor, nf: int) -> torch.Tensor:
 
 
 @torch.no_grad()
-def frame_similarity(spk, wav: torch.Tensor, z: torch.Tensor, nf: int, seg_s: float = 1.5, hop_s: float = 0.5) -> torch.Tensor:
-    """Cosine of the speaker embedding of each ``seg_s`` segment (every ``hop_s``) of ``wav`` [B, T]
-    with each profile z [B, 2, D], interpolated onto ``nf`` frames: [B, 2, nf]."""
-    return similarity(segment_embeddings(spk, wav, seg_s, hop_s), z, nf)
+def frame_similarity(spk, wav: torch.Tensor, z: torch.Tensor, nf: int, scales=((1.5, 0.5),)) -> torch.Tensor:
+    """Cosine of the speaker embedding of each segment (length, hop per scale) of ``wav`` [B, T]
+    with each profile z [B, 2, D], interpolated onto ``nf`` frames: [B, scales, 2, nf]."""
+    return torch.stack([similarity(segment_embeddings(spk, wav, a, b), z, nf) for a, b in scales], 1)
 
 
 class ConditionedSeparator(nn.Module):

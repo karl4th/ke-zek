@@ -115,13 +115,18 @@ def tsvad_pass(model, heads, x, windows, cents, device, iters=1, prof_s=60.0):
     feats = []
     for w in windows:
         seg = torch.from_numpy(np.ascontiguousarray(x[w["start"]:w["end"]]))[None].to(device)
-        h = model.enc.frames(seg, return_hidden=True).half()
-        feats.append((h, segment_embeddings(spk, seg) if any(hd.sim is not None for hd in heads) else None))
+        hs = {id(getattr(hd, "enc", model.enc)): None for hd in heads}
+        for k in hs:
+            enc = next(getattr(hd, "enc", model.enc) for hd in heads if id(getattr(hd, "enc", model.enc)) == k)
+            hs[k] = enc.frames(seg, return_hidden=True).half()
+        feats.append((hs, {sc: segment_embeddings(spk, seg, *sc) for sc in {sc for hd in heads for sc in hd.scales}}))
     for it in range(iters):
         acc, cnt, ps = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32), []
-        for w, (h, e) in zip(windows, feats):
-            sim = similarity(e, z, h.shape[1]) if e is not None else None
-            p = torch.stack([torch.sigmoid(hd(h.float(), z, sim if hd.sim is not None else None))[0]
+        for w, (hs, e) in zip(windows, feats):
+            nfw = next(iter(hs.values())).shape[1]
+            sims = {sc: similarity(emb, z, nfw) for sc, emb in e.items()}
+            p = torch.stack([torch.sigmoid(hd(hs[id(getattr(hd, "enc", model.enc))].float(), z,
+                                              torch.stack([sims[sc] for sc in hd.scales], 1) if hd.scales else None))[0]
                              for hd in heads]).mean(0).float().cpu().numpy()
             f0 = w["start"] // 320
             L = min(p.shape[1], nf - f0)
@@ -343,8 +348,17 @@ def main():
         tsvad = []  # several heads (comma-separated): their probabilities are averaged
         for path in a.tsvad.split(","):
             ck = torch.load(path, map_location="cpu")
-            hd = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"], ck["cfg"].get("sim", False))
+            hd = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"], ck["cfg"].get("sim", False),
+                             ck["cfg"].get("scales"))
             hd.load_state_dict(ck["head"])
+            if "enc" in ck:  # the encoder was trained with this head: its frames for the head, the
+                # original one for the identity pass and linking (its activity head was not trained)
+                import copy
+
+                hd.enc = copy.deepcopy(model.enc)
+                hd.enc._speaker = model.enc._speaker
+                hd.enc.load_state_dict(ck["enc"])
+                hd.enc.eval()
             tsvad.append(hd.to(a.device).eval())
     render = None
     if a.aug_root:

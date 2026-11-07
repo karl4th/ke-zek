@@ -58,10 +58,10 @@ def profiles(spk, ref: torch.Tensor, rng: np.random.Generator, lo_s: float, hi_s
 
 def run(enc, spk, head, b, dev, rng, a, train=True):
     mix = b["mix"].to(dev, non_blocking=True)
-    with torch.no_grad(), torch.autocast(dev, dtype=torch.bfloat16, enabled=a.amp):
+    with torch.set_grad_enabled(train and a.train_enc), torch.autocast(dev, dtype=torch.bfloat16, enabled=a.amp):
         h = enc.frames(mix, return_hidden=True)
     z = profiles(spk, b["ref"].to(dev), rng, *((a.ref_min, a.ref_max) if train else (a.ref_max, a.ref_max)))
-    sim = frame_similarity(spk, mix, z, h.shape[1]) if a.sim else None
+    sim = frame_similarity(spk, mix, z, h.shape[1], head.scales) if head.scales else None
     with torch.autocast(dev, dtype=torch.bfloat16, enabled=a.amp):
         logits = head(h.float(), z, sim)
     nf = logits.shape[-1]
@@ -75,6 +75,8 @@ def run(enc, spk, head, b, dev, rng, a, train=True):
 @torch.no_grad()
 def validate(enc, spk, head, items, dev, a):
     head.eval()
+    was = enc.training
+    enc.eval()
     rng = np.random.default_rng(7)
     tp = fp = fn = fo = fo_n = 0.0
     bc_hit = bc_n = order_ok = n = 0
@@ -100,6 +102,7 @@ def validate(enc, spk, head, items, dev, a):
                     bc_n += 1
                     bc_hit += int(pj[s, r0:r1].mean() >= 0.5)
     head.train()
+    enc.train(was)
     prec, rec = tp / max(tp + fp, 1e-9), tp / max(tp + fn, 1e-9)
     return {"act_f1": 2 * prec * rec / max(prec + rec, 1e-9), "act_precision": prec, "act_recall": rec,
             "bc_recall": bc_hit / max(bc_n, 1), "false_overlap": fo / max(fo_n, 1), "order_accuracy": order_ok / max(n, 1)}
@@ -117,6 +120,9 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--sim", action="store_true", help="also per-frame cosine of 1.5 s segment embeddings with the profiles")
+    ap.add_argument("--sim-scales", default="", help="segment:hop seconds, comma-separated (e.g. 1.0:0.25,2.0:0.5); implies --sim")
+    ap.add_argument("--train-enc", action="store_true", help="also train the encoder's front and Conformer (WavLM stays frozen)")
+    ap.add_argument("--lr-enc", type=float, default=3e-5)
     ap.add_argument("--span-s", type=float, default=16.0)
     ap.add_argument("--single-p", type=float, default=0.25)
     ap.add_argument("--bc-weight", type=float, default=10.0)
@@ -150,8 +156,15 @@ def main():
     for p in enc.parameters():
         p.requires_grad_(False)
     spk = enc._speaker[0]
-    head = ProfileHead(enc.act.in_features, spk.dim, a.layers, a.sim).to(dev)
-    opt = torch.optim.AdamW(head.parameters(), lr=a.lr, weight_decay=1e-2)
+    scales = [tuple(float(v) for v in x.split(":")) for x in a.sim_scales.split(",") if x] or None
+    head = ProfileHead(enc.act.in_features, spk.dim, a.layers, a.sim or bool(scales), scales).to(dev)
+    groups = [{"params": list(head.parameters()), "lr": a.lr}]
+    if a.train_enc:
+        enc_params = list(enc.front.parameters()) + list(enc.conformer.parameters())
+        for p in enc_params:
+            p.requires_grad_(True)
+        groups.append({"params": enc_params, "lr": a.lr_enc})
+    opt = torch.optim.AdamW(groups, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / 500) * 0.5 * (1 + np.cos(np.pi * min(s, a.steps) / a.steps)))
     start, best = 0, -1.0
@@ -159,10 +172,13 @@ def main():
     if a.resume and os.path.exists(last):
         ck = torch.load(last, map_location="cpu")
         head.load_state_dict(ck["head"])
+        if "enc" in ck:
+            enc.load_state_dict(ck["enc"])
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
         start, best = ck["step"], ck["best"]
-    cfg = {"init_model": a.init_model, "hdim": enc.act.in_features, "zdim": spk.dim, "layers": a.layers, "sim": a.sim,
+    cfg = {"init_model": a.init_model, "hdim": enc.act.in_features, "zdim": spk.dim, "layers": a.layers, "sim": bool(head.scales),
+           "scales": head.scales, "train_enc": a.train_enc,
            "labels": os.environ.get("KEZEK_LABELS", "energy"), "word_gap": os.environ.get("KEZEK_WORD_GAP", "0")}
     json.dump({"args": vars(a), "head": cfg}, open(f"{a.out}/manifest.json", "w"), indent=1)
     run_ = tracker.init(os.path.basename(a.out.rstrip("/")), {**vars(a), **cfg}, ["kezek-v3", "stage1", "tsvad"], a.steps)
@@ -179,17 +195,20 @@ def main():
         score = v["act_f1"] + v["bc_recall"] + v["order_accuracy"]
         if score > best:
             best = score
-            torch.save({"head": head.state_dict(), "cfg": cfg, "step": step, "val": v}, f"{a.out}/best.pt")
+            torch.save({"head": head.state_dict(), "cfg": cfg, "step": step, "val": v,
+                        **({"enc": enc.state_dict()} if a.train_enc else {})}, f"{a.out}/best.pt")
 
     if start == 0:
         evaluate(0)
+    if a.train_enc:
+        enc.train()
     rng = np.random.default_rng(start)
     t0 = time.time()
     for step, b in enumerate(dl, start + 1):
         loss, *_ = run(enc, spk, head, b, dev, rng, a)
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(head.parameters(), 5.0)
+        torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]], 5.0)
         opt.step()
         sched.step()
         if step % 100 == 0:
@@ -198,7 +217,7 @@ def main():
         if step % a.eval_every == 0 or step == a.steps:
             evaluate(step)
             torch.save({"head": head.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
-                        "step": step, "best": best, "cfg": cfg}, last)
+                        "step": step, "best": best, "cfg": cfg, **({"enc": enc.state_dict()} if a.train_enc else {})}, last)
         if step >= a.steps:
             break
     tracker.finish(run_)
