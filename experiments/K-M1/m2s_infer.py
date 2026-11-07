@@ -69,8 +69,11 @@ def identity_pass(model, x: np.ndarray, device: str, win_s=30.0, hop_s=15.0):
         logits, z = model.enc(seg)
         p = torch.sigmoid(logits[0])
         solo = torch.stack([p[0] * (1 - p[1]), p[1] * (1 - p[0])])
-        out.append({"start": s, "end": min(s + win, n), "z": z[0].cpu(),
-                    "solo_s": (solo.sum(-1) * 0.02).cpu().tolist(), "p": p.cpu()})
+        w = {"start": s, "end": min(s + win, n), "z": z[0].cpu(),
+             "solo_s": (solo.sum(-1) * 0.02).cpu().tolist(), "p": p.cpu()}
+        if getattr(model.enc, "last_powerset", None) is not None:  # [4, F]: silence, slot 0, slot 1, both
+            w["ps"] = torch.softmax(model.enc.last_powerset[0].float(), -1).T.half().cpu()
+        out.append(w)
     return out
 
 

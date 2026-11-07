@@ -169,6 +169,25 @@ def window_metrics(windows, p_act, act, refs, min_solo=2.0):
     return rows, runs
 
 
+def decode_windows(windows, mode, overlap_thr=0.8):
+    """Binary slot activity per window, written back to w["p"] (so solo, embeddings and linking
+    follow it): the argmax of the powerset softmax (an overlap only where 'both' wins), or the
+    marginals with an overlap kept only where the weaker slot is above ``overlap_thr``."""
+    for w in windows:
+        if mode == "powerset":
+            if "ps" not in w:
+                raise SystemExit("powerset decoding needs windows from an identity pass that kept 'ps'")
+            c = w["ps"].float().argmax(0)
+            w["p"] = torch.stack([(c == 1) | (c == 3), (c == 2) | (c == 3)]).float()
+        else:
+            p = w["p"].float().clone()
+            both = (p[0] > 0.5) & (p[1] > 0.5) & (p.min(0).values < overlap_thr)
+            weak = (p[1] < p[0]).long()  # the weaker slot in each frame
+            p[1][both & (weak == 1)] = 0.0
+            p[0][both & (weak == 0)] = 0.0
+            w["p"] = p
+
+
 @torch.no_grad()
 def reembed(windows, x, spk, device, lab, mode, thr):
     """Slot embeddings from packed solo audio of each window, by the predicted solo (p_a (1 - p_b)
@@ -243,6 +262,12 @@ def main():
                     "predicted solo above --solo-thr, 'label' from the labelled solo of the speaker each "
                     "slot holds (oracle embeddings), 'label_full' also replaces the slot activity by the labels")
     ap.add_argument("--solo-thr", type=float, default=0.5)
+    ap.add_argument("--decode", choices=("marginal", "powerset", "overlap"), default="marginal",
+                    help="slot activity of each window before linking: the marginals as they are, the most "
+                    "likely powerset class (silence, A, B, both; needs windows with 'ps'), or the marginals "
+                    "with overlap kept only where the weaker slot is above --overlap-thr; with powerset or "
+                    "overlap the slot embeddings are taken again from the new solo")
+    ap.add_argument("--overlap-thr", type=float, default=0.8)
     ap.add_argument("--render-part", choices=("all", "sources", "finish"), default="all",
                     help="with --aug-root: the whole recording chain, only what acts on each voice (room, "
                     "EQ, bleed, telephone band, compression) or only what acts on the mixture (noise, music, "
@@ -304,6 +329,9 @@ def main():
             if cf:
                 os.makedirs(a.cache, exist_ok=True)
                 torch.save(windows, cf)
+        if a.decode != "marginal":
+            decode_windows(windows, a.decode, a.overlap_thr)
+            a.reembed = a.reembed or "pred"
         if a.reembed:
             nf0 = len(x) // 320 + 1
             reembed(windows, x, model.enc._speaker[0], a.device, frames_20ms(torch.from_numpy(act10), nf0).bool().numpy(),
