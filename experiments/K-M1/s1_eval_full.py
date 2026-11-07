@@ -131,7 +131,7 @@ def tsvad_pass(model, heads, x, windows, cents, device, iters=1, prof_s=60.0):
     z = torch.stack([F.normalize(c.float(), dim=-1) for c in cents])[None].to(device)
     from m2s_infer import batches
 
-    bs = int(os.environ.get("KEZEK_EVAL_BATCH", "8"))
+    bs = int(os.environ.get("KEZEK_EVAL_BATCH", "8"))  # encoder frames and segment embeddings; the head takes 4x
     encs = {}
     for hd in heads:
         enc = getattr(hd, "enc", model.enc)

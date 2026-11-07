@@ -70,8 +70,8 @@ def batches(lengths, size):
 
 def identity_pass(model, x: np.ndarray, device: str, win_s=30.0, hop_s=15.0, batch=None):
     """Every window of x through the identity encoder, ``batch`` windows at a time (default
-    KEZEK_EVAL_BATCH or 8)."""
-    batch = batch or int(os.environ.get("KEZEK_EVAL_BATCH", "8"))
+    KEZEK_IDENT_BATCH or 8: ECAPA on packed solo of every slot is the memory peak)."""
+    batch = batch or int(os.environ.get("KEZEK_IDENT_BATCH", "8"))
     win, hop = int(win_s * SR), int(hop_s * SR)
     n = len(x)
     starts = list(range(0, max(n - win, 0) + 1, hop))
