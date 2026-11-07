@@ -101,7 +101,7 @@ def render_part(render, rec, sa, sb, mask, rng, part="all"):
 
 
 @torch.no_grad()
-def tsvad_pass(model, head, x, windows, cents, device, iters=1, prof_s=60.0):
+def tsvad_pass(model, heads, x, windows, cents, device, iters=1, prof_s=60.0):
     """Activity of A and B [2, F20] from the profile head on every window (A, B = the linked
     recording centroids), averaged where windows overlap. With ``iters`` > 1 the profiles are then
     taken again from the solo speech of A and of B over the whole recording (up to ``prof_s``
@@ -116,12 +116,13 @@ def tsvad_pass(model, head, x, windows, cents, device, iters=1, prof_s=60.0):
     for w in windows:
         seg = torch.from_numpy(np.ascontiguousarray(x[w["start"]:w["end"]]))[None].to(device)
         h = model.enc.frames(seg, return_hidden=True).half()
-        feats.append((h, segment_embeddings(spk, seg) if head.sim is not None else None))
+        feats.append((h, segment_embeddings(spk, seg) if any(hd.sim is not None for hd in heads) else None))
     for it in range(iters):
         acc, cnt, ps = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32), []
         for w, (h, e) in zip(windows, feats):
             sim = similarity(e, z, h.shape[1]) if e is not None else None
-            p = torch.sigmoid(head(h.float(), z, sim))[0].float().cpu().numpy()
+            p = torch.stack([torch.sigmoid(hd(h.float(), z, sim if hd.sim is not None else None))[0]
+                             for hd in heads]).mean(0).float().cpu().numpy()
             f0 = w["start"] // 320
             L = min(p.shape[1], nf - f0)
             acc[:, f0:f0 + L] += p[:, :L]
@@ -339,9 +340,12 @@ def main():
     if a.tsvad:
         from m2s_model import ProfileHead
 
-        ck = torch.load(a.tsvad, map_location="cpu")
-        tsvad = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"], ck["cfg"].get("sim", False)).to(a.device).eval()
-        tsvad.load_state_dict(ck["head"])
+        tsvad = []  # several heads (comma-separated): their probabilities are averaged
+        for path in a.tsvad.split(","):
+            ck = torch.load(path, map_location="cpu")
+            hd = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"], ck["cfg"].get("sim", False))
+            hd.load_state_dict(ck["head"])
+            tsvad.append(hd.to(a.device).eval())
     render = None
     if a.aug_root:
         sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
