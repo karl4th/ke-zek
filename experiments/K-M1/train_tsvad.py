@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
 import tracker  # noqa: E402
 from m2s_data import SpanSequences, collate  # noqa: E402
 from m2s_infer import load  # noqa: E402
-from m2s_model import ProfileHead, frames_20ms  # noqa: E402
+from m2s_model import ProfileHead, frame_similarity, frames_20ms  # noqa: E402
 from rdata import _runs, splits  # noqa: E402
 
 SR = 16_000
@@ -61,8 +61,9 @@ def run(enc, spk, head, b, dev, rng, a, train=True):
     with torch.no_grad(), torch.autocast(dev, dtype=torch.bfloat16, enabled=a.amp):
         h = enc.frames(mix, return_hidden=True)
     z = profiles(spk, b["ref"].to(dev), rng, *((a.ref_min, a.ref_max) if train else (a.ref_max, a.ref_max)))
+    sim = frame_similarity(spk, mix, z, h.shape[1]) if a.sim else None
     with torch.autocast(dev, dtype=torch.bfloat16, enabled=a.amp):
-        logits = head(h.float(), z)
+        logits = head(h.float(), z, sim)
     nf = logits.shape[-1]
     act = frames_20ms(b["act"].to(dev), nf)
     bc = frames_20ms(b["bc"].to(dev), nf)
@@ -115,6 +116,7 @@ def main():
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--layers", type=int, default=2)
+    ap.add_argument("--sim", action="store_true", help="also per-frame cosine of 1.5 s segment embeddings with the profiles")
     ap.add_argument("--span-s", type=float, default=16.0)
     ap.add_argument("--single-p", type=float, default=0.25)
     ap.add_argument("--bc-weight", type=float, default=10.0)
@@ -148,7 +150,7 @@ def main():
     for p in enc.parameters():
         p.requires_grad_(False)
     spk = enc._speaker[0]
-    head = ProfileHead(enc.act.in_features, spk.dim, a.layers).to(dev)
+    head = ProfileHead(enc.act.in_features, spk.dim, a.layers, a.sim).to(dev)
     opt = torch.optim.AdamW(head.parameters(), lr=a.lr, weight_decay=1e-2)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / 500) * 0.5 * (1 + np.cos(np.pi * min(s, a.steps) / a.steps)))
@@ -160,7 +162,7 @@ def main():
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
         start, best = ck["step"], ck["best"]
-    cfg = {"init_model": a.init_model, "hdim": enc.act.in_features, "zdim": spk.dim, "layers": a.layers,
+    cfg = {"init_model": a.init_model, "hdim": enc.act.in_features, "zdim": spk.dim, "layers": a.layers, "sim": a.sim,
            "labels": os.environ.get("KEZEK_LABELS", "energy"), "word_gap": os.environ.get("KEZEK_WORD_GAP", "0")}
     json.dump({"args": vars(a), "head": cfg}, open(f"{a.out}/manifest.json", "w"), indent=1)
     run_ = tracker.init(os.path.basename(a.out.rstrip("/")), {**vars(a), **cfg}, ["kezek-v3", "stage1", "tsvad"], a.steps)

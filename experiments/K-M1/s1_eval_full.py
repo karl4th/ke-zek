@@ -110,7 +110,13 @@ def tsvad_pass(model, head, x, windows, cents, device):
     z = torch.stack([F.normalize(c.float(), dim=-1) for c in cents])[None].to(device)
     for w in windows:
         seg = torch.from_numpy(np.ascontiguousarray(x[w["start"]:w["end"]]))[None].to(device)
-        p = torch.sigmoid(head(model.enc.frames(seg, return_hidden=True), z))[0].float().cpu().numpy()
+        h = model.enc.frames(seg, return_hidden=True)
+        sim = None
+        if head.sim is not None:
+            from m2s_model import frame_similarity
+
+            sim = frame_similarity(model.enc._speaker[0], seg, z, h.shape[1])
+        p = torch.sigmoid(head(h, z, sim))[0].float().cpu().numpy()
         f0 = w["start"] // 320
         L = min(p.shape[1], nf - f0)
         acc[:, f0:f0 + L] += p[:, :L]
@@ -311,7 +317,7 @@ def main():
         from m2s_model import ProfileHead
 
         ck = torch.load(a.tsvad, map_location="cpu")
-        tsvad = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"]).to(a.device).eval()
+        tsvad = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"], ck["cfg"].get("sim", False)).to(a.device).eval()
         tsvad.load_state_dict(ck["head"])
     render = None
     if a.aug_root:
