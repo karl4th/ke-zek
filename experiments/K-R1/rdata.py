@@ -12,6 +12,7 @@ item has the same keys as the K-T1 simulator, so the K-T1 loss and validation ap
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -133,6 +134,19 @@ def disputed_frames(act_t: np.ndarray, act_o: np.ndarray) -> np.ndarray:
     return disputed
 
 
+def words_mask(path: Path, n: int, pad: float = 0.15) -> np.ndarray:
+    """10 ms frames covered by the words of one speaker's transcript, each padded by ``pad`` s."""
+    m = np.zeros(n, bool)
+    if not Path(path).exists():
+        return ~m
+    for w in json.loads(Path(path).read_text()).get("words", []):
+        if w.get("type", "word") != "word" or w.get("start") is None:
+            continue
+        a, b = int((w["start"] - pad) * 100), int((w["end"] + pad) * 100) + 1
+        m[max(0, a):min(n, b)] = True
+    return m
+
+
 class _Conversation:
     """Memory-mapped tracks and cached activity of one conversation."""
 
@@ -142,6 +156,13 @@ class _Conversation:
         self.act = (np.load(d / "act_a.npy").astype(bool), np.load(d / "act_b.npy").astype(bool))
         n = min(len(self.act[0]), len(self.act[1]), len(self.tracks[0]) // FRAME)
         self.act = (self.act[0][:n], self.act[1][:n])
+        if os.environ.get("KEZEK_LABELS") == "words":
+            # each close-talk track also carries the other voice (crosstalk), and its 40 dB energy
+            # VAD marks that as speech: keep energy activity only where this person's own words
+            # (ASR word timings of the track, padded) are
+            pad = float(os.environ.get("KEZEK_WORD_PAD", "0.15"))
+            self.act = tuple(a & words_mask(d / f"speaker_{s}_transcript.json", n, pad)
+                             for a, s in zip(self.act, "ab"))
         self.frames = n
         self.overlap = np.flatnonzero(self.act[0] & self.act[1])
         # target-only runs of at least 0.5 s, per side: candidate enrollment pieces
