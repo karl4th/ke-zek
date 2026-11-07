@@ -101,6 +101,26 @@ def render_part(render, rec, sa, sb, mask, rng, part="all"):
 
 
 @torch.no_grad()
+def tsvad_pass(model, head, x, windows, cents, device):
+    """Activity of A and B [2, F20] from the profile head on every window (A, B = the linked
+    recording centroids), averaged where windows overlap; each window's p and assign are set to
+    the fixed A/B order so the window metrics see this activity."""
+    nf = len(x) // 320 + 1
+    acc, cnt = np.zeros((2, nf), np.float32), np.zeros(nf, np.float32)
+    z = torch.stack([F.normalize(c.float(), dim=-1) for c in cents])[None].to(device)
+    for w in windows:
+        seg = torch.from_numpy(np.ascontiguousarray(x[w["start"]:w["end"]]))[None].to(device)
+        p = torch.sigmoid(head(model.enc.frames(seg, return_hidden=True), z))[0].float().cpu().numpy()
+        f0 = w["start"] // 320
+        L = min(p.shape[1], nf - f0)
+        acc[:, f0:f0 + L] += p[:, :L]
+        cnt[f0:f0 + L] += 1
+        w["z"] = w["z"][list(w["assign"])]  # slot embeddings in A/B order too (identity metric)
+        w["p"], w["assign"] = torch.from_numpy(p), [0, 1]
+    return acc / np.maximum(cnt, 1)
+
+
+@torch.no_grad()
 def references(tracks, act, spk, device, cap_s=30.0):
     """Clean reference embeddings of each speaker from their own track, one per half of the
     recording (labelled solo frames, up to ``cap_s``): [half, speaker, D]; NaN without 1 s of solo."""
@@ -268,6 +288,8 @@ def main():
                     "with overlap kept only where the weaker slot is above --overlap-thr; with powerset or "
                     "overlap the slot embeddings are taken again from the new solo")
     ap.add_argument("--overlap-thr", type=float, default=0.8)
+    ap.add_argument("--tsvad", default="", help="ProfileHead checkpoint (train_tsvad.py): after linking, the "
+                    "activity of A and B from the encoder features and the two recording profiles")
     ap.add_argument("--render-part", choices=("all", "sources", "finish"), default="all",
                     help="with --aug-root: the whole recording chain, only what acts on each voice (room, "
                     "EQ, bleed, telephone band, compression) or only what acts on the mixture (noise, music, "
@@ -284,6 +306,13 @@ def main():
         _train = _train[:: max(1, len(_train) // a.conversations)]
     pairs = (_train if a.split == "train" else val if a.split == "val" else test)[: a.conversations]
     model = load(a.model, a.device)
+    tsvad = None
+    if a.tsvad:
+        from m2s_model import ProfileHead
+
+        ck = torch.load(a.tsvad, map_location="cpu")
+        tsvad = ProfileHead(ck["cfg"]["hdim"], ck["cfg"]["zdim"], ck["cfg"]["layers"]).to(a.device).eval()
+        tsvad.load_state_dict(ck["head"])
     render = None
     if a.aug_root:
         sys.path.insert(0, os.path.join(HERE, "..", "K-R1"))
@@ -336,10 +365,13 @@ def main():
             nf0 = len(x) // 320 + 1
             reembed(windows, x, model.enc._speaker[0], a.device, frames_20ms(torch.from_numpy(act10), nf0).bool().numpy(),
                     a.reembed, a.solo_thr)
-        link(windows)
+        cents = link(windows)
         if a.relink:
             relink_segments(windows, x, model.enc._speaker[0], a.device, **json.loads(a.relink))
-        p_act = memory_activity(windows, len(x), a.combine) > a.threshold
+        if tsvad is not None and cents[0] is not None and cents[1] is not None:
+            p_act = tsvad_pass(model, tsvad, x, windows, cents, a.device) > a.threshold
+        else:
+            p_act = memory_activity(windows, len(x), a.combine) > a.threshold
         nf = p_act.shape[1]
         bc10 = np.stack([backchannel_frames(act10[0], act10[1]), backchannel_frames(act10[1], act10[0])])
         act = frames_20ms(torch.from_numpy(act10), nf).bool().numpy()

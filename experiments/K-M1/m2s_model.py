@@ -125,7 +125,7 @@ class IdentityEncoder(nn.Module):
         self.act = nn.Linear(hdim, 4 if act_head == "powerset" else 2)
         self.emb = nn.Linear(hdim, emb)
 
-    def frames(self, wav: torch.Tensor):
+    def frames(self, wav: torch.Tensor, return_hidden: bool = False):
         if self.features == "mel":
             with torch.autocast(wav.device.type, enabled=False):
                 m = self.mel(wav.float()).clamp_min(1e-8).log()
@@ -141,6 +141,8 @@ class IdentityEncoder(nn.Module):
         else:
             with torch.autocast(wav.device.type, enabled=False):  # no fast bf16 LSTM kernel
                 h, _ = self.rnn(h.float())
+        if return_hidden:  # [B, F, hdim]: the sequence model's output, before the heads
+            return h.float()
         a = self.act(h).float()
         if self.act_head == "powerset":
             self.last_powerset = a  # [B, F, 4] logits over silence, slot 0, slot 1, both
@@ -206,6 +208,36 @@ class IdentityEncoder(nn.Module):
         w = torch.sigmoid(logits).amax(1)
         w = w / (w.sum(-1, keepdim=True) + 1e-4)
         return F.normalize(torch.einsum("bf,bfd->bd", w, e), dim=-1)
+
+
+class ProfileHead(nn.Module):
+    """Second pass of block 1 (as TS-VAD): frame features of the encoder and the two recording
+    profiles (speaker embeddings of A and B) -> activity of A and of B in that order. Each stream
+    is the frame features modulated (FiLM) by its own profile and the other one, then a small
+    Conformer shared by both streams; each output frame sees both streams, so it can tell whose
+    voice is present rather than whether any voice is."""
+
+    def __init__(self, hdim: int = 256, zdim: int = 192, layers: int = 2):
+        super().__init__()
+        from torchaudio.models import Conformer
+
+        self.film = nn.Linear(2 * zdim, 2 * hdim)
+        nn.init.zeros_(self.film.weight)
+        nn.init.zeros_(self.film.bias)
+        self.conformer = Conformer(hdim, num_heads=4, ffn_dim=4 * hdim, num_layers=layers,
+                                   depthwise_conv_kernel_size=31, dropout=0.1)
+        self.out = nn.Linear(2 * hdim, 1)
+
+    def forward(self, h: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        """h [B, F, hdim], z [B, 2, zdim] (unit norm) -> logits [B, 2, F] (A, B)."""
+        lengths = torch.full((h.shape[0],), h.shape[1], device=h.device, dtype=torch.long)
+        streams = []
+        for s in (0, 1):
+            g, b = self.film(torch.cat([z[:, s], z[:, 1 - s]], -1)).chunk(2, -1)
+            u, _ = self.conformer(h * (1 + g[:, None]) + b[:, None], lengths)
+            streams.append(u)
+        return torch.stack([self.out(torch.cat([streams[s], streams[1 - s]], -1)).squeeze(-1)
+                            for s in (0, 1)], 1).float()
 
 
 class ConditionedSeparator(nn.Module):
