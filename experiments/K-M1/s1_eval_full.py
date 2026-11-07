@@ -301,6 +301,56 @@ def reembed(windows, x, spk, device, lab, mode, thr):
         w["solo_s"] = secs
 
 
+def summarize(per_conv, win_rows, win_runs, hours, t_ident=0.0, h_ident=0.0):
+    """Recording-level metrics from per-conversation scores and per-window rows (also used to merge
+    the shards of one evaluation, merge_shards.py)."""
+    tp, fp, fn = (sum(p[x] for p in per_conv) for x in ("tp", "fp", "fn"))
+    prec, rec = tp / max(tp + fp, 1e-9), tp / max(tp + fn, 1e-9)
+    sw = sum(p["swap_windows"] for p in per_conv)
+    tpc, fpc, fnc = (sum(p[x] for p in per_conv) for x in ("tp_c", "fp_c", "fn_c"))
+    pc, rc_ = tpc / max(tpc + fpc, 1e-9), tpc / max(tpc + fnc, 1e-9)
+    fps = max(fp, 1e-9)
+    out = {
+        "act_f1_collar200": 2 * pc * rc_ / max(pc + rc_, 1e-9),
+        "fp_share_edge": sum(p["fp_edge"] for p in per_conv) / fps,
+        "fp_share_other_talks": sum(p["fp_other"] for p in per_conv) / fps,
+        "fp_share_silence": sum(p["fp_silence"] for p in per_conv) / fps,
+        "act_precision": prec, "act_recall": rec, "act_f1": 2 * prec * rec / max(prec + rec, 1e-9),
+        "bc_recall": sum(p["bc_hit"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
+        "bc_runs": sum(p["bc_n"] for p in per_conv),
+        "bc_recall_any_slot": sum(p["bc_hit_any"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
+        "swap_windows": sw, "swap_windows_per_hour": sw / max(hours, 1e-9),
+        "swap_windows_unflagged": sw - sum(p["swap_windows_flagged"] for p in per_conv),
+        "swap_window_rate": sw / max(sum(p["two_speaker_windows"] for p in per_conv), 1),
+        "conversations_without_swaps": float(np.mean([p["swap_windows"] == 0 for p in per_conv])),
+        "uncertain_window_rate": sum(p["uncertain_windows"] for p in per_conv) / max(sum(p["windows"] for p in per_conv), 1),
+        "conversations": len(per_conv), "hours": hours,
+    }
+    clear = [x for x in win_rows if x["clear"]]
+    sw16 = [x for x in clear if x["swap"]]
+    unclear = [x for x in win_rows if "wrong_profile" in x]
+    ids = [x["id_ok"] for x in clear if "id_ok" in x]
+    out.update({
+        "windows16": len(win_rows), "clear_windows16": len(clear), "unclear_windows16": len(win_rows) - len(clear),
+        "swap_windows16": len(sw16), "swap_rate16": len(sw16) / max(len(clear), 1),
+        "conversations_without_swaps16": float(np.mean([p["swap16"] == 0 for p in per_conv])),
+        "unclear_wrong_profile_rate": float(np.mean([x["wrong_profile"] for x in unclear])) if unclear else float("nan"),
+        "id_accuracy": float(np.mean(ids)) if ids else float("nan"),
+        "swap16_edge_share": float(np.mean([x["edge"] for x in sw16])) if sw16 else float("nan"),
+        "swap16_run_mean": float(np.mean(win_runs)) if win_runs else 0.0,
+        "swap16_run_max": int(max(win_runs)) if win_runs else 0,
+        "swap16_pred_solo_min_median": float(np.median([x["pred_solo_min"] for x in sw16])) if sw16 else float("nan"),
+        "ok16_pred_solo_min_median": float(np.median([x["pred_solo_min"] for x in clear if not x["swap"]])) if clear else float("nan"),
+        "swap16_ref_solo_min_median": float(np.median([x["ref_solo_min"] for x in sw16])) if sw16 else float("nan"),
+        "swap_rate16_pred_solo_lt2": (lambda c: float(np.mean([x["swap"] for x in c])) if c else float("nan"))(
+            [x for x in clear if x["pred_solo_min"] < 2.0]),
+        "swap_rate16_pred_solo_ge2": (lambda c: float(np.mean([x["swap"] for x in c])) if c else float("nan"))(
+            [x for x in clear if x["pred_solo_min"] >= 2.0]),
+        "ident_s_per_audio_hour": t_ident / h_ident if h_ident else float("nan"),
+    })
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
@@ -342,6 +392,9 @@ def main():
                     "profiles from the solo speech the previous pass found")
     ap.add_argument("--tsvad", default="", help="ProfileHead checkpoint (train_tsvad.py): after linking, the "
                     "activity of A and B from the encoder features and the two recording profiles")
+    ap.add_argument("--shard", type=int, default=0, help="with --shards: only conversations k with k %% shards == shard "
+                    "(the render seed stays the conversation's position, so shards add up to the whole evaluation)")
+    ap.add_argument("--shards", type=int, default=1)
     ap.add_argument("--x-cache", default="", help="directory of rendered recordings from render_cache.py "
                     "(<conv>_<render-part>.npy, int16); conversations not in it are rendered on the fly")
     ap.add_argument("--render-part", choices=("all", "sources", "finish"), default="all",
@@ -397,6 +450,8 @@ def main():
                        ["kezek-v3", "stage1", "full-recording", a.split], len(pairs))
     per_conv, hours, t_ident, h_ident, win_rows, win_runs = [], 0.0, 0.0, 0.0, [], []
     for k, pair in enumerate(pairs):
+        if k % a.shards != a.shard:
+            continue
         c = _Conversation(pair)
         nfr = min(c.frames, int(a.max_minutes * 6000))
         sa, sb = c.audio(0, 0, nfr), c.audio(1, 0, nfr)
@@ -417,7 +472,8 @@ def main():
             h_ident += len(x) / SR / 3600
             if cf:
                 os.makedirs(a.cache, exist_ok=True)
-                torch.save(windows, cf)
+                torch.save(windows, f"{cf}.{os.getpid()}.tmp")  # atomic: parallel evaluations share the cache
+                os.replace(f"{cf}.{os.getpid()}.tmp", cf)
         if a.decode != "marginal":
             decode_windows(windows, a.decode, a.overlap_thr)
             a.reembed = a.reembed or "pred"
@@ -455,50 +511,7 @@ def main():
         print(json.dumps(r), flush=True)
         tracker.log(run, {f"progress_{a.split}{sfx}/conversations_without_swaps": float(np.mean([p["swap_windows"] == 0 for p in per_conv])),
                           f"progress_{a.split}{sfx}/swap_windows": sum(p["swap_windows"] for p in per_conv)}, k + 1)
-    tp, fp, fn = (sum(p[x] for p in per_conv) for x in ("tp", "fp", "fn"))
-    prec, rec = tp / max(tp + fp, 1e-9), tp / max(tp + fn, 1e-9)
-    sw = sum(p["swap_windows"] for p in per_conv)
-    tpc, fpc, fnc = (sum(p[x] for p in per_conv) for x in ("tp_c", "fp_c", "fn_c"))
-    pc, rc_ = tpc / max(tpc + fpc, 1e-9), tpc / max(tpc + fnc, 1e-9)
-    fps = max(fp, 1e-9)
-    out = {
-        "act_f1_collar200": 2 * pc * rc_ / max(pc + rc_, 1e-9),
-        "fp_share_edge": sum(p["fp_edge"] for p in per_conv) / fps,
-        "fp_share_other_talks": sum(p["fp_other"] for p in per_conv) / fps,
-        "fp_share_silence": sum(p["fp_silence"] for p in per_conv) / fps,
-        "act_precision": prec, "act_recall": rec, "act_f1": 2 * prec * rec / max(prec + rec, 1e-9),
-        "bc_recall": sum(p["bc_hit"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
-        "bc_runs": sum(p["bc_n"] for p in per_conv),
-        "bc_recall_any_slot": sum(p["bc_hit_any"] for p in per_conv) / max(sum(p["bc_n"] for p in per_conv), 1),
-        "swap_windows": sw, "swap_windows_per_hour": sw / max(hours, 1e-9),
-        "swap_windows_unflagged": sw - sum(p["swap_windows_flagged"] for p in per_conv),
-        "swap_window_rate": sw / max(sum(p["two_speaker_windows"] for p in per_conv), 1),
-        "conversations_without_swaps": float(np.mean([p["swap_windows"] == 0 for p in per_conv])),
-        "uncertain_window_rate": sum(p["uncertain_windows"] for p in per_conv) / max(sum(p["windows"] for p in per_conv), 1),
-        "conversations": len(per_conv), "hours": hours,
-    }
-    clear = [x for x in win_rows if x["clear"]]
-    sw16 = [x for x in clear if x["swap"]]
-    unclear = [x for x in win_rows if "wrong_profile" in x]
-    ids = [x["id_ok"] for x in clear if "id_ok" in x]
-    out.update({
-        "windows16": len(win_rows), "clear_windows16": len(clear), "unclear_windows16": len(win_rows) - len(clear),
-        "swap_windows16": len(sw16), "swap_rate16": len(sw16) / max(len(clear), 1),
-        "conversations_without_swaps16": float(np.mean([p["swap16"] == 0 for p in per_conv])),
-        "unclear_wrong_profile_rate": float(np.mean([x["wrong_profile"] for x in unclear])) if unclear else float("nan"),
-        "id_accuracy": float(np.mean(ids)) if ids else float("nan"),
-        "swap16_edge_share": float(np.mean([x["edge"] for x in sw16])) if sw16 else float("nan"),
-        "swap16_run_mean": float(np.mean(win_runs)) if win_runs else 0.0,
-        "swap16_run_max": int(max(win_runs)) if win_runs else 0,
-        "swap16_pred_solo_min_median": float(np.median([x["pred_solo_min"] for x in sw16])) if sw16 else float("nan"),
-        "ok16_pred_solo_min_median": float(np.median([x["pred_solo_min"] for x in clear if not x["swap"]])) if clear else float("nan"),
-        "swap16_ref_solo_min_median": float(np.median([x["ref_solo_min"] for x in sw16])) if sw16 else float("nan"),
-        "swap_rate16_pred_solo_lt2": (lambda c: float(np.mean([x["swap"] for x in c])) if c else float("nan"))(
-            [x for x in clear if x["pred_solo_min"] < 2.0]),
-        "swap_rate16_pred_solo_ge2": (lambda c: float(np.mean([x["swap"] for x in c])) if c else float("nan"))(
-            [x for x in clear if x["pred_solo_min"] >= 2.0]),
-        "ident_s_per_audio_hour": t_ident / h_ident if h_ident else float("nan"),
-    })
+    out = summarize(per_conv, win_rows, win_runs, hours, t_ident, h_ident)
     if a.real_clip:
         import soundfile as sf
         from scipy.signal import resample_poly
@@ -518,7 +531,8 @@ def main():
         speech = e > e.max() - 40
         share = p_act[:, speech].mean(1)
         out.update({"real_dominant_share": float(share.max()), "real_other_share": float(share.min())})
-    json.dump({"summary": out, "per_conversation": per_conv, "windows": win_rows, "swap_runs": win_runs, "args": vars(a)}, open(a.out, "w"), indent=1)
+    json.dump({"summary": out, "per_conversation": per_conv, "windows": win_rows, "swap_runs": win_runs,
+               "hours": hours, "t_ident": t_ident, "h_ident": h_ident, "args": vars(a)}, open(a.out, "w"), indent=1)
     print("SUMMARY", json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()}), flush=True)
     tracker.log(run, {f"full_{a.split}{sfx}/{k}": v for k, v in out.items() if isinstance(v, (int, float))}, len(pairs))
     tracker.finish(run)
