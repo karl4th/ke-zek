@@ -27,7 +27,9 @@ tracker.load_env()
 from huggingface_hub import hf_hub_download as d
 t = os.environ["HF_TOKEN"]
 d("manifestro/kezek-k-r1", "$init", local_dir="/data/init", token=t)
-d("manifestro/kezek-k-r1", "k-v3-s1/calibration.json", local_dir="/data/init", token=t)
+import json
+os.makedirs("/data/init/k-v3-s1", exist_ok=True)  # the v3s1 calibration (manifest of v3s1c): never uploaded
+json.dump({"weights": {"sep": 1.0, "act": 1.0, "id": 0.1, "mix": 0.1}}, open("/data/init/k-v3-s1/calibration.json", "w"))
 d("manifestro/kezek-k-r1", "k-v3-v3s1c/best.pt", local_dir="/data/init", token=t)
 from huggingface_hub import snapshot_download
 snapshot_download("manifestro/kezek-v1-bench", repo_type="dataset", revision="d0fdd6d90d460430724788198518677793047d64",
