@@ -257,8 +257,10 @@ def segment_embeddings(spk, wav: torch.Tensor, seg_s: float = 1.5, hop_s: float 
     B = wav.shape[0]
     pieces = F.pad(wav, (seg // 2, seg // 2)).unfold(1, seg, hop)  # [B, n, seg]
     n = pieces.shape[1]
-    with torch.autocast(wav.device.type, enabled=False):
-        return F.normalize(spk(pieces.reshape(B * n, seg).float()).float(), dim=-1).view(B, n, -1)
+    flat = pieces.reshape(B * n, seg)
+    with torch.autocast(wav.device.type, enabled=False):  # at most 256 segments per ECAPA call (GPU memory)
+        e = torch.cat([spk(flat[i:i + 256].float()).float() for i in range(0, len(flat), 256)])
+    return F.normalize(e, dim=-1).view(B, n, -1)
 
 
 def similarity(e: torch.Tensor, z: torch.Tensor, nf: int) -> torch.Tensor:
